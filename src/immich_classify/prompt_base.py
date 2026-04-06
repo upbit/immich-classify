@@ -11,16 +11,16 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 # ── Prompt registry ─────────────────────────────────────────────────
-# Maps prompt_type strings to their concrete BasePrompt subclass so that
+# Maps prompt name strings to their concrete BasePrompt subclass so that
 # ``from_dict()`` can reconstruct the correct type.
 PROMPT_REGISTRY: dict[str, type[BasePrompt]] = {}
 
 
 def register_prompt(cls: type[BasePrompt]) -> type[BasePrompt]:
     """Class decorator that adds a prompt subclass to the registry."""
-    prompt_type = cls.__dataclass_fields__["prompt_type"].default
-    assert isinstance(prompt_type, str), f"prompt_type must be a str, got {type(prompt_type)}"
-    PROMPT_REGISTRY[prompt_type] = cls
+    name = cls.__dataclass_fields__["name"].default
+    assert isinstance(name, str), f"name must be a str, got {type(name)}"
+    PROMPT_REGISTRY[name] = cls
     return cls
 
 
@@ -78,7 +78,7 @@ class BasePrompt:
     and can be used interchangeably by ``VLMClient`` and ``TaskEngine``.
     """
 
-    prompt_type: str = ""
+    name: str = ""
 
     system_prompt: str = ""
 
@@ -160,7 +160,7 @@ class BasePrompt:
             schema_dict[name] = field_dict
 
         return {
-            "prompt_type": self.prompt_type,
+            "name": self.name,
             "system_prompt": self.system_prompt,
             "user_prompt": self.user_prompt,
             "schema": schema_dict,
@@ -170,8 +170,8 @@ class BasePrompt:
     def from_dict(cls, data: dict[str, Any]) -> BasePrompt:
         """Deserialize from a dictionary.
 
-        Uses the ``prompt_type`` field to look up the correct subclass in the
-        prompt registry.  Falls back to the base ``BasePrompt`` when the type
+        Uses the ``name`` field to look up the correct subclass in the
+        prompt registry.  Falls back to the base ``BasePrompt`` when the name
         is unknown or missing (backward compatibility).
 
         Args:
@@ -180,14 +180,14 @@ class BasePrompt:
         Returns:
             A BasePrompt (or subclass) instance.
         """
-        prompt_type = str(data.get("prompt_type", ""))
-        target_cls = PROMPT_REGISTRY.get(prompt_type, cls)
+        prompt_name = str(data.get("name", ""))
+        target_cls = PROMPT_REGISTRY.get(prompt_name, cls)
 
         schema: dict[str, SchemaField] = {}
         raw_schema: Any = data.get("schema", {})
         assert isinstance(raw_schema, dict)
         schema_dict = cast(dict[str, Any], raw_schema)
-        for name, field_data_raw in schema_dict.items():
+        for field_name, field_data_raw in schema_dict.items():
             assert isinstance(field_data_raw, dict)
             field_data = cast(dict[str, Any], field_data_raw)
             field_type = str(field_data["field_type"])
@@ -197,7 +197,7 @@ class BasePrompt:
             if raw_enum is not None:
                 assert isinstance(raw_enum, list)
                 enum_list = [str(e) for e in cast(list[Any], raw_enum)]
-            schema[name] = SchemaField(
+            schema[field_name] = SchemaField(
                 field_type=field_type,
                 description=description,
                 enum=enum_list,
@@ -207,7 +207,7 @@ class BasePrompt:
         # Use the target subclass defaults for any missing fields
         defaults = target_cls()
         return target_cls(
-            prompt_type=prompt_type,
+            name=prompt_name,
             system_prompt=data.get("system_prompt", defaults.system_prompt),
             user_prompt=data.get("user_prompt", defaults.user_prompt),
             schema=schema if schema else defaults.schema,

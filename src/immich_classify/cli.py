@@ -335,7 +335,7 @@ async def cmd_generate(
 
         # Display the generated config
         print("\n── Generated Prompt Config ──")
-        print(f"  Type:          {prompt.prompt_type}")
+        print(f"  Type:          {prompt.name}")
         print(f"  System prompt: {prompt.system_prompt[:120]}...")
         print(f"  User prompt:   {prompt.user_prompt[:120]}...")
         print(f"  Schema fields:")

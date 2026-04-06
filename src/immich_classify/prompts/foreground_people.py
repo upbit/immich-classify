@@ -13,7 +13,7 @@ from immich_classify.prompt_base import BasePrompt, SchemaField, register_prompt
 class ForegroundPeoplePrompt(BasePrompt):
     """Count foreground people while ignoring background figures."""
 
-    prompt_type: str = "foreground_people"
+    name: str = "foreground_people"
 
     system_prompt: str = (
         "You are an expert visual analyst specializing in crowd density and "

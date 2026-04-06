@@ -26,7 +26,7 @@ You are an expert at designing image classification schemas for Vision Language 
 Given a user's task description, generate a BasePrompt configuration as a JSON object with these exact fields:
 
 {
-  "prompt_type": "custom",
+  "name": "custom",
   "system_prompt": "<system message for the VLM>",
   "user_prompt": "<user message template — MUST contain the literal placeholder {schema_description}>",
   "schema": {
@@ -243,6 +243,8 @@ def export_as_python(prompt: BasePrompt, path: str) -> None:
         path: File path to write to.
     """
     class_name = _derive_class_name(path)
+    # Derive a snake_case prompt name from the file stem (e.g. "image_tags")
+    prompt_name = os.path.splitext(os.path.basename(path))[0]
 
     lines: list[str] = [
         '"""Auto-generated prompt configuration.',
@@ -258,9 +260,9 @@ def export_as_python(prompt: BasePrompt, path: str) -> None:
         "@register_prompt",
         "@dataclass",
         f"class {class_name}(BasePrompt):",
-        f'    """Auto-generated prompt: {prompt.prompt_type}."""',
+        f'    """Auto-generated prompt: {prompt_name}."""',
         "",
-        f"    prompt_type: str = {prompt.prompt_type!r}",
+        f"    name: str = {prompt_name!r}",
         "",
         "    system_prompt: str = (",
     ]

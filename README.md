@@ -117,7 +117,7 @@ from immich_classify.prompt_base import BasePrompt, SchemaField, register_prompt
 @register_prompt
 @dataclass
 class MyPrompt(BasePrompt):
-    prompt_type: str = "my_custom"
+    name: str = "my_custom"
     system_prompt: str = (
         "You are a photo organizer. Classify the image into the given schema. "
         "Output ONLY valid JSON."
@@ -160,7 +160,7 @@ immich-classify classify --album <id> --prompt-config my_schema.py
 
 Two built-in prompts are provided under `src/immich_classify/prompts/`:
 
-| Class | `prompt_type` | Fields | Use case |
+| Class | `name` | Fields | Use case |
 |-------|---------------|--------|----------|
 | `ClassificationPrompt` | `classification` | category, quality, tags | General image classification (default) |
 | `ForegroundPeoplePrompt` | `foreground_people` | foreground_count, detection_confidence, etc. | Count foreground people |
@@ -193,7 +193,7 @@ from immich_classify.prompt_base import BasePrompt, SchemaField, register_prompt
 @register_prompt
 @dataclass
 class SmileDetectionPrompt(BasePrompt):
-    prompt_type: str = "smile_detection"
+    name: str = "smile_detection"
     system_prompt: str = (
         "You are a facial expression analysis assistant. "
         "Analyze the given image for people and their expressions. "
@@ -298,7 +298,7 @@ uv run pyright src/immich_classify/
 
 ### Test suite
 
-95 tests covering all modules:
+102 tests covering all modules:
 
 | Module | Tests | Coverage |
 |--------|-------|----------|

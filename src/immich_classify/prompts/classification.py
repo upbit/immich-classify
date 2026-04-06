@@ -22,7 +22,7 @@ class ClassificationPrompt(BasePrompt):
         tags: Descriptive tags for the image
     """
 
-    prompt_type: str = "classification"
+    name: str = "classification"
 
     system_prompt: str = (
         "You are a photo organizer. Classify the image into the given schema. "

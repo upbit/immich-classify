@@ -188,7 +188,7 @@ class VLMClient:
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
-                    "name": prompt_config.prompt_type,
+                    "name": prompt_config.name,
                     "strict": True,
                     "schema": json_schema,
                 },

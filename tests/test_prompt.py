@@ -80,9 +80,9 @@ class TestClassificationPrompt:
         assert "quality" in prompt.schema
         assert "tags" in prompt.schema
 
-    def test_default_prompt_type(self) -> None:
+    def test_default_name(self) -> None:
         prompt = ClassificationPrompt()
-        assert prompt.prompt_type == "classification"
+        assert prompt.name == "classification"
 
     def test_build_schema_description(self) -> None:
         prompt = ClassificationPrompt()
@@ -108,10 +108,10 @@ class TestClassificationPrompt:
         # All default fields have no default, so all required
         assert "category" in schema["required"]
 
-    def test_to_dict_includes_prompt_type(self) -> None:
+    def test_to_dict_includes_name(self) -> None:
         prompt = ClassificationPrompt()
         data = prompt.to_dict()
-        assert data["prompt_type"] == "classification"
+        assert data["name"] == "classification"
 
     def test_to_dict_and_from_dict_roundtrip(self) -> None:
         original = ClassificationPrompt()
@@ -123,15 +123,15 @@ class TestClassificationPrompt:
 
         assert restored.system_prompt == original.system_prompt
         assert restored.user_prompt == original.user_prompt
-        assert restored.prompt_type == original.prompt_type
+        assert restored.name == original.name
         assert set(restored.schema.keys()) == set(original.schema.keys())
         for name in original.schema:
             assert restored.schema[name].field_type == original.schema[name].field_type
             assert restored.schema[name].description == original.schema[name].description
             assert restored.schema[name].enum == original.schema[name].enum
 
-    def test_from_dict_backward_compat_no_prompt_type(self) -> None:
-        """Old data without prompt_type should fall back to BasePrompt."""
+    def test_from_dict_backward_compat_no_name(self) -> None:
+        """Old data without name should fall back to BasePrompt."""
         data = {
             "system_prompt": "test",
             "user_prompt": "test {schema_description}",
@@ -174,11 +174,11 @@ class TestPromptRegistry:
         data = ClassificationPrompt().to_dict()
         restored = BasePrompt.from_dict(data)
         assert isinstance(restored, ClassificationPrompt)
-        assert restored.prompt_type == "classification"
+        assert restored.name == "classification"
 
     def test_from_dict_unknown_type_falls_back_to_base(self) -> None:
         data = {
-            "prompt_type": "unknown_custom_type",
+            "name": "unknown_custom_type",
             "system_prompt": "custom",
             "user_prompt": "custom {schema_description}",
             "schema": {
@@ -187,4 +187,4 @@ class TestPromptRegistry:
         }
         prompt = BasePrompt.from_dict(data)
         assert isinstance(prompt, BasePrompt)
-        assert prompt.prompt_type == "unknown_custom_type"
+        assert prompt.name == "unknown_custom_type"

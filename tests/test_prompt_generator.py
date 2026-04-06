@@ -35,7 +35,7 @@ class TestExportAsPython:
 
     def test_export_contains_all_schema_fields(self) -> None:
         prompt = BasePrompt(
-            prompt_type="custom",
+            name="custom",
             schema={
                 "has_smile": SchemaField(
                     field_type="bool",
@@ -69,7 +69,7 @@ class TestExportAsPython:
     def test_exported_file_is_loadable(self) -> None:
         """Verify the exported .py file can be exec'd and contains a valid prompt."""
         prompt = BasePrompt(
-            prompt_type="test_export",
+            name="test_export",
             system_prompt="Test system prompt",
             user_prompt="Test {schema_description} prompt",
             schema={
@@ -77,8 +77,8 @@ class TestExportAsPython:
                 "field_b": SchemaField(field_type="bool", description="B field"),
             },
         )
-        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
-            path = f.name
+        # Use a meaningful filename so the derived name is predictable
+        path = os.path.join(tempfile.gettempdir(), "test_export.py")
         try:
             export_as_python(prompt, path)
 
@@ -93,7 +93,8 @@ class TestExportAsPython:
 
             loaded = getattr(module, "prompt", None)
             assert isinstance(loaded, BasePrompt)
-            assert loaded.prompt_type == "test_export"
+            # name is derived from the file stem, not from the original prompt
+            assert loaded.name == "test_export"
             assert "field_a" in loaded.schema
             assert "field_b" in loaded.schema
         finally:
@@ -107,7 +108,7 @@ class TestPromptGenerator:
     async def test_generate_parses_valid_response(self) -> None:
         """Test that generate() correctly parses a well-formed API response."""
         generated_config = {
-            "prompt_type": "custom",
+            "name": "custom",
             "system_prompt": "You detect cats in images.",
             "user_prompt": "Detect cats: {schema_description}",
             "schema": {
