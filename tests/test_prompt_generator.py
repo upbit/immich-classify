@@ -27,7 +27,8 @@ class TestExportAsPython:
             export_as_python(prompt, path)
             assert os.path.exists(path)
             content = open(path).read()
-            assert "prompt = BasePrompt(" in content
+            assert "class" in content
+            assert "BasePrompt" in content
             assert "SchemaField" in content
         finally:
             os.unlink(path)

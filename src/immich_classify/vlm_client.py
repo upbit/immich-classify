@@ -26,6 +26,21 @@ _MARKDOWN_CODE_BLOCK_RE = re.compile(
     re.DOTALL,
 )
 
+# Regex to find a ```json ... ``` block anywhere in the text (not just at start/end).
+# Used as a fallback when models output reasoning text before the JSON block.
+_EMBEDDED_CODE_BLOCK_RE = re.compile(
+    r"```(?:json|JSON)?\s*\n?(\{.*?\})\n?\s*```",
+    re.DOTALL,
+)
+
+# Regex to find a top-level JSON object anywhere in the text.
+# Used as a last-resort fallback when models output reasoning text
+# followed by bare JSON (no code block wrapper).
+_BARE_JSON_OBJECT_RE = re.compile(
+    r"(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})",
+    re.DOTALL,
+)
+
 
 def _strip_markdown_json(text: str) -> str:
     """Strip markdown code block wrappers from a string.
@@ -44,6 +59,50 @@ def _strip_markdown_json(text: str) -> str:
     match = _MARKDOWN_CODE_BLOCK_RE.match(text.strip())
     if match:
         return match.group(1).strip()
+    return text
+
+
+def _extract_json_from_mixed_content(text: str) -> str:
+    """Extract JSON from model output that contains reasoning text before JSON.
+
+    Some models (e.g. Qwen3.5) output a chain-of-thought explanation followed
+    by the actual JSON result.  This function attempts multiple strategies to
+    locate and extract the JSON object:
+
+    1. Look for an embedded ```json ... ``` code block anywhere in the text.
+    2. Look for a bare JSON object (``{ ... }``) in the text.
+
+    Args:
+        text: Raw message content that failed direct JSON parsing.
+
+    Returns:
+        The extracted JSON string if found, otherwise the original text
+        unchanged (so the caller can raise the appropriate error).
+    """
+    # Strategy 1: embedded markdown code block
+    embedded_match = _EMBEDDED_CODE_BLOCK_RE.search(text)
+    if embedded_match:
+        logger.debug(
+            "Extracted JSON from embedded code block in mixed-content response"
+        )
+        return embedded_match.group(1).strip()
+
+    # Strategy 2: bare JSON object — find the last { ... } which is most
+    # likely the actual result (reasoning text may contain partial braces).
+    bare_matches = _BARE_JSON_OBJECT_RE.findall(text)
+    if bare_matches:
+        # Prefer the last match — models typically put the answer at the end.
+        candidate: str = bare_matches[-1].strip()
+        # Quick sanity check: must parse as valid JSON
+        try:
+            json.loads(candidate)
+            logger.debug(
+                "Extracted bare JSON object from mixed-content response"
+            )
+            return candidate
+        except json.JSONDecodeError:
+            pass
+
     return text
 
 
@@ -123,12 +182,13 @@ class VLMClient:
                     ],
                 },
             ],
-            "temperature": 0.1,
+            "temperature": 0.6,
+            "top_p": 0.9,
             "max_tokens": 1024,
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
-                    "name": "classification",
+                    "name": prompt_config.prompt_type,
                     "strict": True,
                     "schema": json_schema,
                 },
@@ -243,11 +303,25 @@ class VLMClient:
         # Parse the message content as JSON
         try:
             parsed_result: Any = json.loads(cleaned_content)
-        except json.JSONDecodeError as exc:
-            raise VLMError(
-                f"VLM response content is not valid JSON: {exc}",
-                raw_response=raw_text,
-            ) from exc
+        except json.JSONDecodeError:
+            # Fallback: some models (e.g. Qwen3.5) output reasoning text
+            # before the actual JSON.  Try to extract JSON from mixed content.
+            logger.debug(
+                "Direct JSON parse failed; attempting to extract JSON from mixed-content response"
+            )
+            extracted_content = _extract_json_from_mixed_content(cleaned_content)
+            if extracted_content != cleaned_content:
+                logger.info(
+                    "Extracted JSON from mixed-content VLM response "
+                    "(model likely output reasoning text before JSON)"
+                )
+            try:
+                parsed_result = json.loads(extracted_content)
+            except json.JSONDecodeError as exc:
+                raise VLMError(
+                    f"VLM response content is not valid JSON: {exc}",
+                    raw_response=raw_text,
+                ) from exc
 
         assert isinstance(parsed_result, dict)
         result = cast(dict[str, Any], parsed_result)

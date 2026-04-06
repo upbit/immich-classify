@@ -97,15 +97,29 @@ class BasePrompt:
             lines.append(schema_field.to_schema_description(name))
         return "\n".join(lines)
 
+    # Appended to every user prompt to discourage models from emitting
+    # chain-of-thought reasoning before the JSON payload.
+    _JSON_ONLY_SUFFIX: str = (
+        "\n\nIMPORTANT: Respond with ONLY the JSON object. "
+        "Do NOT include any explanation, reasoning, or additional text "
+        "before or after the JSON."
+    )
+
     def build_user_prompt(self) -> str:
         """Build the final user prompt with schema description filled in.
 
+        A ``_JSON_ONLY_SUFFIX`` is automatically appended to reinforce the
+        requirement that the model must output **only** valid JSON without
+        any preceding chain-of-thought or explanatory text.
+
         Returns:
-            The user prompt with {schema_description} replaced.
+            The user prompt with {schema_description} replaced and the
+            JSON-only instruction appended.
         """
-        return self.user_prompt.format(
+        base = self.user_prompt.format(
             schema_description=self.build_schema_description()
         )
+        return base + self._JSON_ONLY_SUFFIX
 
     def build_json_schema(self) -> dict[str, Any]:
         """Build a JSON Schema object for structured output (response_format).

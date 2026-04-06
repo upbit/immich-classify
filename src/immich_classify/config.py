@@ -24,6 +24,7 @@ class Config:
     concurrency: int
     timeout: int
     image_size: str
+    default_prompt: str
 
     def __post_init__(self) -> None:
         if self.image_size not in ("thumbnail", "original"):
@@ -96,6 +97,7 @@ def load_config(env_file: str | Path | None = None) -> Config:
         sys.exit(1)
 
     image_size = os.environ.get("CLASSIFY_IMAGE_SIZE", "thumbnail")
+    default_prompt = os.environ.get("CLASSIFY_DEFAULT_PROMPT", "")
 
     return Config(
         immich_api_url=immich_api_url.rstrip("/"),
@@ -107,4 +109,5 @@ def load_config(env_file: str | Path | None = None) -> Config:
         concurrency=concurrency,
         timeout=timeout,
         image_size=image_size,
+        default_prompt=default_prompt,
     )

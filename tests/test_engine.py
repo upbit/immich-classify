@@ -28,6 +28,7 @@ def _make_config() -> Config:
         concurrency=2,
         timeout=60,
         image_size="thumbnail",
+        default_prompt="",
     )
 
 

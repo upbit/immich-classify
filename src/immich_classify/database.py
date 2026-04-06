@@ -85,7 +85,7 @@ class Database:
         Args:
             task_id: Unique task identifier (UUID).
             album_ids: List of Immich album IDs to process.
-            prompt_config: Serialized ClassificationPrompt configuration.
+            prompt_config: Serialized BasePrompt configuration.
             total_count: Total number of assets to process.
         """
         now = _now_iso()

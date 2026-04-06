@@ -49,6 +49,7 @@ cp .env.example .env
 | `CLASSIFY_CONCURRENCY` | Max concurrent image processing | `1` |
 | `CLASSIFY_TIMEOUT` | VLM request timeout in seconds | `60` |
 | `CLASSIFY_IMAGE_SIZE` | `thumbnail` or `original` | `thumbnail` |
+| `CLASSIFY_DEFAULT_PROMPT` | Default prompt config `.py` file (see [path resolution](#prompt-config-path-resolution)) | *(built-in ClassificationPrompt)* |
 
 Environment variables override `.env` file values.
 
@@ -84,6 +85,7 @@ immich-classify albums
 
 immich-classify classify --album <id> [--album <id2>] [--prompt-config <file>] [--concurrency <n>]
     Create and run a classification task. Supports multiple albums.
+    <file> is resolved via cwd first, then the built-in prompts directory.
 
 immich-classify debug --album <id> [--count <n>] [--prompt-config <file>]
     Run a small debug batch (default 10) and print results. No database writes.
@@ -156,13 +158,29 @@ immich-classify classify --album <id> --prompt-config my_schema.py
 
 ### Built-in prompt
 
-A default `ClassificationPrompt` is provided in `src/immich_classify/prompts/classification.py`:
+Two built-in prompts are provided under `src/immich_classify/prompts/`:
 
 | Class | `prompt_type` | Fields | Use case |
 |-------|---------------|--------|----------|
 | `ClassificationPrompt` | `classification` | category, quality, tags | General image classification (default) |
+| `ForegroundPeoplePrompt` | `foreground_people` | foreground_count, detection_confidence, etc. | Count foreground people |
 
-When no `--prompt-config` is specified, the CLI uses this prompt automatically.
+When no `--prompt-config` is specified, the CLI uses `ClassificationPrompt` by default. You can change the default by setting `CLASSIFY_DEFAULT_PROMPT` in `.env`:
+
+```bash
+# Use a custom prompt as the default (no need for --prompt-config every time)
+# Just the filename is enough — built-in prompts are found automatically
+CLASSIFY_DEFAULT_PROMPT=foreground_people.py
+```
+
+#### Prompt config path resolution
+
+Both `--prompt-config` and `CLASSIFY_DEFAULT_PROMPT` use the same search order:
+
+1. **Current working directory** — the path is tried as-is (absolute or relative to cwd).
+2. **Built-in prompts directory** — `src/immich_classify/prompts/` inside the package.
+
+This means you can refer to built-in prompts by bare filename (e.g. `foreground_people.py`) without specifying the full path, while custom prompts in your project directory take priority if they share the same name.
 
 You can subclass `BasePrompt` to create your own prompt for any task:
 
@@ -245,7 +263,8 @@ src/immich_classify/
 ├── config.py              # Config dataclass, .env loading, validation
 ├── prompt_base.py         # BasePrompt base class, SchemaField & prompt registry
 ├── prompts/
-│   └── classification.py  # ClassificationPrompt - default implementation
+│   ├── classification.py  # ClassificationPrompt - general image classification (default)
+│   └── foreground_people.py  # ForegroundPeoplePrompt - foreground people detection
 ├── prompt_generator.py    # AI-assisted prompt config generation & export
 ├── immich_client.py       # Async Immich API client (httpx)
 ├── vlm_client.py          # Async OpenAI-compatible VLM client (httpx)
@@ -260,6 +279,7 @@ src/immich_classify/
 - **Base / implementation separation** - ``BasePrompt`` in ``prompt_base.py`` provides schema tooling, JSON (de)serialization and the ``register_prompt`` decorator.  Concrete prompts live under ``prompts/`` and are discovered via the registry, making it easy to add AI-generated prompts as new files.
 - **SQLite with `json_extract()`** - Classification fields are fully dynamic. Results are stored as JSON and queried with SQLite's JSON functions, so no schema migration is needed when fields change.
 - **Structured Output** - Uses `response_format: { type: "json_schema" }` to enforce valid JSON output from the VLM, rather than fragile regex parsing.
+- **Robust response parsing** - Automatically handles models that wrap JSON in markdown code blocks or prepend chain-of-thought reasoning before the JSON payload (common with Qwen, LLaMA, and other local models).
 - **Per-asset persistence** - Each image result is committed immediately. A crash or interrupt loses at most the in-flight images, not the entire batch.
 - **Asset deduplication** - When classifying multiple albums, assets appearing in more than one album are automatically deduplicated.
 
@@ -287,7 +307,7 @@ uv run pyright src/immich_classify/
 | `prompt_generator.py` | 6 | Export to Python, AI generation with mock, error handling |
 | `database.py` | 11 | CRUD, filtering with `json_extract`, deduplication |
 | `immich_client.py` | 5 | Album listing, asset filtering, image download |
-| `vlm_client.py` | 17 | Success, API errors, invalid JSON, structured output, markdown stripping |
+| `vlm_client.py` | 24 | Success, API errors, invalid JSON, structured output, markdown stripping, mixed-content extraction |
 | `engine.py` | 9 | Concurrency, error continuation, pause/resume, dedup |
 | `cli.py` | 19 | Argument parsing, filter parsing, multi-album |
 

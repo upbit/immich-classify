@@ -24,6 +24,7 @@ class TestConfig:
             concurrency=1,
             timeout=60,
             image_size="thumbnail",
+            default_prompt="",
         )
         assert config.immich_api_url == "http://localhost:2283"
 
@@ -39,6 +40,7 @@ class TestConfig:
                 concurrency=1,
                 timeout=60,
                 image_size="invalid",
+                default_prompt="",
             )
 
     def test_invalid_concurrency(self) -> None:
@@ -53,6 +55,7 @@ class TestConfig:
                 concurrency=0,
                 timeout=60,
                 image_size="thumbnail",
+                default_prompt="",
             )
 
     def test_invalid_timeout(self) -> None:
@@ -67,6 +70,7 @@ class TestConfig:
                 concurrency=1,
                 timeout=0,
                 image_size="thumbnail",
+                default_prompt="",
             )
 
 

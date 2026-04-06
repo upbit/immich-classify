@@ -8,7 +8,12 @@ import httpx
 import pytest
 
 from immich_classify.prompts.classification import ClassificationPrompt
-from immich_classify.vlm_client import VLMClient, VLMError, _strip_markdown_json
+from immich_classify.vlm_client import (
+    VLMClient,
+    VLMError,
+    _extract_json_from_mixed_content,
+    _strip_markdown_json,
+)
 
 
 def _make_vlm_client(handler: httpx.MockTransport) -> VLMClient:
@@ -41,7 +46,7 @@ class TestVLMClassify:
         def handler(request: httpx.Request) -> httpx.Response:
             body = json.loads(request.content)
             assert body["model"] == "test-model"
-            assert body["temperature"] == 0.1
+            assert body["temperature"] == 0.6
             assert "response_format" in body
             # Verify message structure
             messages = body["messages"]
@@ -253,3 +258,101 @@ class TestStripMarkdownJson:
     def test_partial_code_block_returns_original(self) -> None:
         text = '```json\n{"incomplete": true}'
         assert _strip_markdown_json(text) == text
+
+
+class TestExtractJsonFromMixedContent:
+    """Tests for _extract_json_from_mixed_content utility function."""
+
+    def test_reasoning_then_code_block(self) -> None:
+        """Model outputs reasoning text followed by a ```json code block."""
+        text = (
+            "Based on the image provided, I can identify the following people:\n"
+            "- One adult woman holding a baby.\n"
+            "- One infant being held by the woman.\n"
+            "Therefore, the total count of people is 2.\n\n"
+            '```json\n{\n  "person_count": 2\n}\n```'
+        )
+        result = _extract_json_from_mixed_content(text)
+        assert json.loads(result) == {"person_count": 2}
+
+    def test_reasoning_then_bare_json(self) -> None:
+        """Model outputs reasoning text followed by bare JSON (no code block)."""
+        text = (
+            "The image shows a landscape with mountains.\n\n"
+            '{"category": "landscape", "quality": "high"}'
+        )
+        result = _extract_json_from_mixed_content(text)
+        assert json.loads(result) == {"category": "landscape", "quality": "high"}
+
+    def test_plain_json_returned_as_is(self) -> None:
+        """Pure JSON input is returned unchanged."""
+        text = '{"category": "food"}'
+        result = _extract_json_from_mixed_content(text)
+        assert result == text
+
+    def test_no_json_returns_original(self) -> None:
+        """Text with no JSON at all is returned unchanged."""
+        text = "I cannot classify this image because it is too dark."
+        assert _extract_json_from_mixed_content(text) == text
+
+    def test_embedded_code_block_preferred_over_bare_json(self) -> None:
+        """When both a code block and bare JSON exist, the code block wins."""
+        text = (
+            'Some text mentioning {"partial": true} in passing.\n\n'
+            '```json\n{"actual": "result"}\n```'
+        )
+        result = _extract_json_from_mixed_content(text)
+        assert json.loads(result) == {"actual": "result"}
+
+
+class TestMixedContentClassification:
+    """Integration tests: VLM returns reasoning + JSON, should still parse."""
+
+    @pytest.mark.asyncio
+    async def test_reasoning_before_json_code_block(self) -> None:
+        """Qwen-style output: reasoning text then ```json ... ```."""
+        mixed_content = (
+            "Based on the image provided, I can identify the following people:\n"
+            "- One adult woman holding a baby.\n"
+            "Therefore, the total count of people is 2.\n\n"
+            '```json\n{"person_count": 2}\n```'
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {"finish_reason": "stop", "message": {"content": mixed_content}}
+                    ]
+                },
+            )
+
+        client = _make_vlm_client(httpx.MockTransport(handler))
+        result = await client.classify_image("base64data", ClassificationPrompt())
+        assert result["person_count"] == 2
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_reasoning_before_bare_json(self) -> None:
+        """Model outputs reasoning text then bare JSON without code block."""
+        mixed_content = (
+            "This image shows a plate of sushi.\n\n"
+            '{"category": "food", "quality": "high", "tags": ["sushi"]}'
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {"finish_reason": "stop", "message": {"content": mixed_content}}
+                    ]
+                },
+            )
+
+        client = _make_vlm_client(httpx.MockTransport(handler))
+        result = await client.classify_image("base64data", ClassificationPrompt())
+        assert result["category"] == "food"
+        assert result["tags"] == ["sushi"]
+        await client.close()

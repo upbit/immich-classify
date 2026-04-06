@@ -8,6 +8,7 @@ tested via the ``debug`` command, and exported as reusable ``.py`` files.
 from __future__ import annotations
 
 import json
+import os
 import re
 import textwrap
 from typing import Any, cast
@@ -207,40 +208,76 @@ class PromptGenerator:
             ) from exc
 
 
-def export_as_python(prompt: BasePrompt, path: str) -> None:
-    """Export a BasePrompt as a loadable Python file.
+def _derive_class_name(file_path: str) -> str:
+    """Derive a PascalCase class name from a file path.
 
-    The generated file defines a ``prompt`` variable that can be used
-    with ``--prompt-config``.
+    Examples:
+        ``foreground_people.py`` → ``ForegroundPeoplePrompt``
+        ``cat_finder.py``        → ``CatFinderPrompt``
+
+    Args:
+        file_path: The output file path.
+
+    Returns:
+        A PascalCase class name ending with ``Prompt``.
+    """
+    stem = os.path.splitext(os.path.basename(file_path))[0]
+    # Convert snake_case to PascalCase
+    pascal = "".join(word.capitalize() for word in stem.split("_"))
+    # Append "Prompt" if not already present
+    if not pascal.endswith("Prompt"):
+        pascal += "Prompt"
+    return pascal
+
+
+def export_as_python(prompt: BasePrompt, path: str) -> None:
+    """Export a BasePrompt as a loadable Python file with a class definition.
+
+    The generated file defines a ``BasePrompt`` subclass (with a name
+    derived from the file path) decorated with ``@register_prompt`` and
+    ``@dataclass``, plus a module-level ``prompt`` instance for backward
+    compatibility with ``--prompt-config``.
 
     Args:
         prompt: The prompt configuration to export.
         path: File path to write to.
     """
+    class_name = _derive_class_name(path)
+
     lines: list[str] = [
         '"""Auto-generated prompt configuration.',
         "",
-        "Load with: immich-classify classify --prompt-config THIS_FILE.py",
+        f"Load with: immich-classify classify --prompt-config {os.path.basename(path)}",
         '"""',
         "",
-        "from immich_classify.prompt_base import BasePrompt, SchemaField",
+        "from dataclasses import dataclass, field",
         "",
-        "prompt = BasePrompt(",
-        f"    prompt_type={prompt.prompt_type!r},",
-        f"    system_prompt=(",
+        "from immich_classify.prompt_base import BasePrompt, SchemaField, register_prompt",
+        "",
+        "",
+        "@register_prompt",
+        "@dataclass",
+        f"class {class_name}(BasePrompt):",
+        f'    """Auto-generated prompt: {prompt.prompt_type}."""',
+        "",
+        f"    prompt_type: str = {prompt.prompt_type!r}",
+        "",
+        "    system_prompt: str = (",
     ]
 
     # Wrap long strings nicely
     for line in textwrap.wrap(prompt.system_prompt, width=72):
         lines.append(f"        {line!r}")
-    lines.append("    ),")
+    lines.append("    )")
+    lines.append("")
 
-    lines.append("    user_prompt=(")
+    lines.append("    user_prompt: str = (")
     for line in prompt.user_prompt.split("\n"):
         lines.append(f"        {(line + chr(10))!r}")
-    lines.append("    ),")
+    lines.append("    )")
+    lines.append("")
 
-    lines.append("    schema={")
+    lines.append("    schema: dict[str, SchemaField] = field(default_factory=lambda: {")
     for name, sf in prompt.schema.items():
         parts: list[str] = [
             f"        {name!r}: SchemaField(",
@@ -255,8 +292,11 @@ def export_as_python(prompt: BasePrompt, path: str) -> None:
         lines.extend(parts)
 
     lines.extend([
-        "    },",
-        ")",
+        "    })",
+        "",
+        "",
+        f"# Module-level instance for --prompt-config loading",
+        f"prompt = {class_name}()",
         "",
     ])
 

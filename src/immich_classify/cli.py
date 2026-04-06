@@ -20,25 +20,70 @@ from immich_classify.database import Database
 from immich_classify.engine import TaskEngine, debug_classify
 from immich_classify.immich_client import ImmichClient
 from immich_classify.prompt_base import BasePrompt
-from immich_classify.prompts.classification import ClassificationPrompt
 from immich_classify.prompt_generator import PromptGenerator, PromptGeneratorError, export_as_python
 from immich_classify.vlm_client import VLMClient
 
 
-def _load_prompt_config(path: str | None) -> BasePrompt:
-    """Load a BasePrompt from a Python file or return default.
+def _resolve_prompt_path(path: str) -> str:
+    """Resolve a prompt config path with fallback search.
+
+    Search order:
+    1. *path* as-is (absolute or relative to cwd).
+    2. ``<package>/prompts/<path>`` — the built-in prompts directory.
 
     Args:
-        path: Optional path to a Python file containing a BasePrompt instance.
-            When *None*, the built-in ``ClassificationPrompt`` is used.
+        path: A file path (absolute or relative) or bare filename.
+
+    Returns:
+        The first existing path found.
+
+    Raises:
+        SystemExit: If the file cannot be found in any search location.
+    """
+    import pathlib
+
+    # 1. Current directory (or absolute path)
+    candidate = pathlib.Path(path)
+    if candidate.is_file():
+        return str(candidate)
+
+    # 2. Built-in prompts directory
+    builtin_dir = pathlib.Path(__file__).parent / "prompts"
+    candidate = builtin_dir / path
+    if candidate.is_file():
+        logger.debug("Resolved prompt config '{}' → {}", path, candidate)
+        return str(candidate)
+
+    logger.error(
+        "Prompt config '{}' not found. Searched:\n"
+        "  1. Current directory: {}\n"
+        "  2. Built-in prompts:  {}",
+        path,
+        pathlib.Path.cwd() / path,
+        builtin_dir / path,
+    )
+    sys.exit(1)
+
+
+def _load_prompt_from_file(path: str) -> BasePrompt:
+    """Load a BasePrompt from a Python file.
+
+    The *path* is first resolved via :func:`_resolve_prompt_path` (cwd →
+    built-in prompts directory) before loading.
+
+    Discovery order inside the file:
+    1. A module-level variable named ``prompt`` or ``PROMPT``.
+    2. Any ``BasePrompt`` *instance* found in the module.
+    3. Any ``BasePrompt`` *subclass* (not ``BasePrompt`` itself) — instantiated automatically.
+
+    Args:
+        path: Path to a Python file containing a BasePrompt definition.
 
     Returns:
         BasePrompt instance.
     """
-    if path is None:
-        return ClassificationPrompt()
-
-    spec = importlib.util.spec_from_file_location("prompt_config", path)
+    resolved = _resolve_prompt_path(path)
+    spec = importlib.util.spec_from_file_location("prompt_config", resolved)
     if spec is None or spec.loader is None:
         logger.error("Cannot load prompt config from {}", path)
         sys.exit(1)
@@ -46,26 +91,81 @@ def _load_prompt_config(path: str | None) -> BasePrompt:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
+    # 1. Look for named variables
     prompt = getattr(module, "prompt", None)
     if prompt is None:
         prompt = getattr(module, "PROMPT", None)
+
+    # 2. Look for any BasePrompt instance
     if prompt is None:
-        # Try to find any BasePrompt instance
         for attr_name in dir(module):
             attr = getattr(module, attr_name)
             if isinstance(attr, BasePrompt):
                 prompt = attr
                 break
 
+    # 3. Look for any BasePrompt subclass and instantiate it
+    if prompt is None:
+        for attr_name in dir(module):
+            attr = getattr(module, attr_name)
+            if (
+                isinstance(attr, type)
+                and issubclass(attr, BasePrompt)
+                and attr is not BasePrompt
+            ):
+                prompt = attr()
+                break
+
     if not isinstance(prompt, BasePrompt):
         logger.error(
-            "Could not find a BasePrompt instance in {}. "
-            "Define a variable named 'prompt' or 'PROMPT'.",
+            "Could not find a BasePrompt subclass or instance in {}. "
+            "Define a class that subclasses BasePrompt, or a variable named 'prompt'.",
             path,
         )
         sys.exit(1)
 
     return prompt
+
+
+def _get_default_prompt(config: Config) -> BasePrompt:
+    """Return the default prompt, respecting CLASSIFY_DEFAULT_PROMPT.
+
+    If ``config.default_prompt`` is set, it is treated as a path to a
+    Python file containing a prompt definition.  Otherwise, the built-in
+    ``ClassificationPrompt`` is used.
+
+    Args:
+        config: Application configuration.
+
+    Returns:
+        BasePrompt instance.
+    """
+    if config.default_prompt:
+        logger.debug("Loading default prompt from {}", config.default_prompt)
+        return _load_prompt_from_file(config.default_prompt)
+
+    # Lazy import to avoid circular dependency and allow the default to be
+    # overridden without touching this module.
+    from immich_classify.prompts.classification import ClassificationPrompt
+
+    return ClassificationPrompt()
+
+
+def _load_prompt_config(path: str | None, config: Config) -> BasePrompt:
+    """Load a BasePrompt from a Python file or return the configured default.
+
+    Args:
+        path: Optional path to a Python file containing a BasePrompt definition.
+            When *None*, the default prompt (from ``CLASSIFY_DEFAULT_PROMPT``
+            or the built-in ``ClassificationPrompt``) is used.
+        config: Application configuration.
+
+    Returns:
+        BasePrompt instance.
+    """
+    if path is None:
+        return _get_default_prompt(config)
+    return _load_prompt_from_file(path)
 
 
 async def cmd_albums(config: Config) -> None:
@@ -100,7 +200,7 @@ async def cmd_classify(
     concurrency: int | None,
 ) -> None:
     """Create and run a classification task."""
-    prompt_config = _load_prompt_config(prompt_config_path)
+    prompt_config = _load_prompt_config(prompt_config_path, config)
     database = Database(config.database_path)
     immich = ImmichClient(config.immich_api_url, config.immich_api_key, config.timeout)
     vlm = VLMClient(config.vlm_api_url, config.vlm_api_key, config.vlm_model_name, config.timeout)
@@ -140,7 +240,7 @@ async def cmd_debug(
     prompt_config_path: str | None,
 ) -> None:
     """Run a debug batch of classifications."""
-    prompt_config = _load_prompt_config(prompt_config_path)
+    prompt_config = _load_prompt_config(prompt_config_path, config)
     immich = ImmichClient(config.immich_api_url, config.immich_api_key, config.timeout)
     vlm = VLMClient(config.vlm_api_url, config.vlm_api_key, config.vlm_model_name, config.timeout)
 
