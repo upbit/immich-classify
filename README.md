@@ -2,13 +2,7 @@
 
 A Python CLI tool that classifies photos in [Immich](https://immich.app/) using Vision Language Models (VLM). It fetches images via the Immich API, sends them to any OpenAI-compatible VLM for structured classification, and stores results in a local SQLite database for querying and export.
 
-```
-CLI ──Immich API──> Immich Server (albums / assets / thumbnails)
- |
- |──base64──> VLM API (OpenAI Chat Completion protocol)
- |
- └──write──> Local SQLite (classification results + task state)
-```
+![intro](./assets/intro.jpg)
 
 ## Features
 
