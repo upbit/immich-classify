@@ -20,6 +20,7 @@ from immich_classify.database import Database
 from immich_classify.engine import TaskEngine, debug_classify
 from immich_classify.immich_client import ImmichClient
 from immich_classify.prompt import ClassificationPrompt
+from immich_classify.prompt_generator import PromptGenerator, PromptGeneratorError, export_as_python
 from immich_classify.vlm_client import VLMClient
 
 
@@ -204,6 +205,64 @@ async def cmd_debug(
     finally:
         await vlm.close()
         await immich.close()
+
+
+async def cmd_generate(
+    config: Config,
+    goal: str,
+    output_path: str | None,
+    api_url: str | None,
+    api_key: str | None,
+    model_name: str | None,
+) -> None:
+    """Generate a prompt config from a natural language description."""
+    effective_url = api_url or config.vlm_api_url
+    effective_key = api_key or config.vlm_api_key
+    effective_model = model_name or config.vlm_model_name
+
+    generator = PromptGenerator(
+        api_url=effective_url,
+        api_key=effective_key,
+        model_name=effective_model,
+        timeout=config.timeout,
+    )
+
+    try:
+        logger.info("Generating prompt config for: {}", goal)
+        prompt = await generator.generate(goal)
+
+        # Display the generated config
+        print("\n── Generated Prompt Config ──")
+        print(f"  Type:          {prompt.prompt_type}")
+        print(f"  System prompt: {prompt.system_prompt[:120]}...")
+        print(f"  User prompt:   {prompt.user_prompt[:120]}...")
+        print(f"  Schema fields:")
+        for name, sf in prompt.schema.items():
+            enum_str = f" (enum: {sf.enum})" if sf.enum else ""
+            default_str = f" (default: {sf.default})" if sf.default is not None else ""
+            print(f"    - {name} ({sf.field_type}): {sf.description}{enum_str}{default_str}")
+
+        # Show serialized JSON for inspection
+        print("\n── Serialized JSON ──")
+        print(json.dumps(prompt.to_dict(), indent=2, ensure_ascii=False))
+
+        if output_path:
+            export_as_python(prompt, output_path)
+            print(f"\n  Exported to: {output_path}")
+            print(f"  Test with:   immich-classify debug --album <ALBUM_ID> --prompt-config {output_path}")
+        else:
+            print("\n  Tip: Add --output <file.py> to export as a reusable config file.")
+
+    except PromptGeneratorError as exc:
+        logger.error("Prompt generation failed: {}", exc)
+        if exc.raw_response:
+            logger.debug("Raw response: {}", exc.raw_response[:2000])
+        sys.exit(1)
+    except Exception as exc:
+        logger.error("Prompt generation failed: {}", exc)
+        sys.exit(1)
+    finally:
+        await generator.close()
 
 
 async def cmd_status(config: Config, task_id: str | None) -> None:
@@ -433,6 +492,14 @@ def build_parser() -> argparse.ArgumentParser:
     debug_parser.add_argument("--count", type=int, default=10, help="Number of images to classify (default: 10)")
     debug_parser.add_argument("--prompt-config", help="Path to custom prompt config Python file")
 
+    # generate
+    gen_parser = subparsers.add_parser("generate", help="AI-generate a prompt config from a task description")
+    gen_parser.add_argument("--goal", required=True, help="Natural language description of what to classify or detect")
+    gen_parser.add_argument("--output", help="Export generated config as a Python file")
+    gen_parser.add_argument("--api-url", help="Override VLM_API_URL for the generator model")
+    gen_parser.add_argument("--api-key", help="Override VLM_API_KEY for the generator model")
+    gen_parser.add_argument("--model", help="Override VLM_MODEL_NAME for the generator model")
+
     # status
     status_parser = subparsers.add_parser("status", help="Show task status")
     status_parser.add_argument("--task", help="Specific task ID (shows all if omitted)")
@@ -487,6 +554,16 @@ def main() -> None:
             album_id=args.album,
             count=args.count,
             prompt_config_path=args.prompt_config,
+        ))
+
+    elif args.command == "generate":
+        asyncio.run(cmd_generate(
+            config,
+            goal=args.goal,
+            output_path=args.output,
+            api_url=args.api_url,
+            api_key=args.api_key,
+            model_name=args.model,
         ))
 
     elif args.command == "status":

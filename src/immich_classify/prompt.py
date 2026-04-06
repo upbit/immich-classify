@@ -1,9 +1,29 @@
-"""Classification prompt and schema definitions."""
+"""Classification prompt and schema definitions.
+
+Provides a base ``ClassificationPrompt`` class and several pre-configured
+subclasses for common tasks (tagging, smile detection, person filtering).
+Custom task types can subclass ``ClassificationPrompt`` and will be
+automatically discoverable via the prompt registry.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, cast
+
+# ── Prompt registry ─────────────────────────────────────────────────
+# Maps prompt_type strings to their concrete ClassificationPrompt subclass
+# so that ``from_dict()`` can reconstruct the correct type.
+_PROMPT_REGISTRY: dict[str, type[ClassificationPrompt]] = {}
+
+
+def _register_prompt(cls: type[ClassificationPrompt]) -> type[ClassificationPrompt]:
+    """Class decorator that adds a prompt subclass to the registry."""
+    # Resolve the default prompt_type from the dataclass field
+    prompt_type = cls.__dataclass_fields__["prompt_type"].default
+    assert isinstance(prompt_type, str), f"prompt_type must be a str, got {type(prompt_type)}"
+    _PROMPT_REGISTRY[prompt_type] = cls
+    return cls
 
 
 @dataclass
@@ -51,9 +71,17 @@ class SchemaField:
         return schema
 
 
+@_register_prompt
 @dataclass
 class ClassificationPrompt:
-    """Classification prompt and schema definition."""
+    """Base classification prompt and schema definition.
+
+    Subclasses override default field values to provide pre-configured
+    prompts for specific tasks.  All subclasses share the same interface
+    and can be used interchangeably by ``VLMClient`` and ``TaskEngine``.
+    """
+
+    prompt_type: str = "classification"
 
     system_prompt: str = (
         "You are an image classification assistant. "
@@ -147,6 +175,7 @@ class ClassificationPrompt:
             schema_dict[name] = field_dict
 
         return {
+            "prompt_type": self.prompt_type,
             "system_prompt": self.system_prompt,
             "user_prompt": self.user_prompt,
             "schema": schema_dict,
@@ -156,12 +185,19 @@ class ClassificationPrompt:
     def from_dict(cls, data: dict[str, Any]) -> ClassificationPrompt:
         """Deserialize from a dictionary.
 
+        Uses the ``prompt_type`` field to look up the correct subclass in the
+        prompt registry.  Falls back to the base ``ClassificationPrompt`` when
+        the type is unknown or missing (backward compatibility).
+
         Args:
             data: Dictionary representation of a prompt configuration.
 
         Returns:
-            A ClassificationPrompt instance.
+            A ClassificationPrompt (or subclass) instance.
         """
+        prompt_type = str(data.get("prompt_type", "classification"))
+        target_cls = _PROMPT_REGISTRY.get(prompt_type, cls)
+
         schema: dict[str, SchemaField] = {}
         raw_schema: Any = data.get("schema", {})
         assert isinstance(raw_schema, dict)
@@ -183,10 +219,131 @@ class ClassificationPrompt:
                 default=field_data.get("default"),
             )
 
-        # Use a temporary default instance to get field defaults
-        defaults = cls()
-        return cls(
+        # Use the target subclass defaults for any missing fields
+        defaults = target_cls()
+        return target_cls(
+            prompt_type=prompt_type,
             system_prompt=data.get("system_prompt", defaults.system_prompt),
             user_prompt=data.get("user_prompt", defaults.user_prompt),
-            schema=schema,
+            schema=schema if schema else defaults.schema,
         )
+
+
+# ── Pre-configured prompt subclasses ────────────────────────────────
+
+
+@_register_prompt
+@dataclass
+class TaggingPrompt(ClassificationPrompt):
+    """Pre-configured prompt for image tagging.
+
+    Focuses on extracting descriptive tags and scene type from images.
+    """
+
+    prompt_type: str = "tagging"
+
+    system_prompt: str = (
+        "You are an image tagging assistant. "
+        "Analyze the given image and output a JSON object with descriptive tags. "
+        "Output ONLY valid JSON, no other text."
+    )
+
+    user_prompt: str = (
+        "Tag this image according to the following schema:\n"
+        "{schema_description}\n\n"
+        "Provide specific, descriptive tags that capture the key subjects, "
+        "actions, setting, and mood of the image. Output a JSON object."
+    )
+
+    schema: dict[str, SchemaField] = field(default_factory=lambda: {
+        "tags": SchemaField(
+            field_type="list[string]",
+            description="Descriptive tags for the image content (5-15 tags)",
+        ),
+        "scene": SchemaField(
+            field_type="string",
+            description="Primary scene type",
+            enum=["indoor", "outdoor", "studio", "screenshot", "other"],
+        ),
+    })
+
+
+@_register_prompt
+@dataclass
+class SmileDetectionPrompt(ClassificationPrompt):
+    """Pre-configured prompt for smile and facial expression detection."""
+
+    prompt_type: str = "smile_detection"
+
+    system_prompt: str = (
+        "You are a facial expression analysis assistant. "
+        "Analyze the given image for people and their facial expressions. "
+        "Output ONLY valid JSON, no other text."
+    )
+
+    user_prompt: str = (
+        "Analyze facial expressions in this image according to the following schema:\n"
+        "{schema_description}\n\n"
+        "If no people are visible, set has_people to false and use default values "
+        "for other fields. Output a JSON object."
+    )
+
+    schema: dict[str, SchemaField] = field(default_factory=lambda: {
+        "has_people": SchemaField(
+            field_type="bool",
+            description="Whether the image contains people",
+        ),
+        "has_smile": SchemaField(
+            field_type="bool",
+            description="Whether anyone in the image is smiling",
+            default=False,
+        ),
+        "smile_count": SchemaField(
+            field_type="int",
+            description="Number of people who are smiling",
+            default=0,
+        ),
+        "expression": SchemaField(
+            field_type="string",
+            description="Dominant facial expression in the image",
+            enum=["happy", "neutral", "sad", "surprised", "angry", "other", "no_face"],
+            default="no_face",
+        ),
+    })
+
+
+@_register_prompt
+@dataclass
+class PersonFilterPrompt(ClassificationPrompt):
+    """Pre-configured prompt for filtering images by person presence."""
+
+    prompt_type: str = "person_filter"
+
+    system_prompt: str = (
+        "You are an image analysis assistant specializing in detecting people. "
+        "Analyze the given image and determine if it contains people. "
+        "Output ONLY valid JSON, no other text."
+    )
+
+    user_prompt: str = (
+        "Analyze this image for the presence of people according to the following schema:\n"
+        "{schema_description}\n\n"
+        "Output a JSON object with the specified fields."
+    )
+
+    schema: dict[str, SchemaField] = field(default_factory=lambda: {
+        "has_person": SchemaField(
+            field_type="bool",
+            description="Whether the image contains any people",
+        ),
+        "person_count": SchemaField(
+            field_type="int",
+            description="Number of people visible in the image",
+            default=0,
+        ),
+        "is_portrait": SchemaField(
+            field_type="bool",
+            description="Whether the image is a portrait (one person as the main subject)",
+            default=False,
+        ),
+    })
