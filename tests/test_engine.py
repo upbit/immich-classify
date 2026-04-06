@@ -13,7 +13,7 @@ from immich_classify.config import Config
 from immich_classify.database import Database
 from immich_classify.engine import TaskEngine, debug_classify
 from immich_classify.immich_client import Asset
-from immich_classify.prompt import ClassificationPrompt
+from immich_classify.prompts.classification import ClassificationPrompt
 from immich_classify.vlm_client import VLMError
 
 

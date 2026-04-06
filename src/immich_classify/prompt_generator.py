@@ -1,6 +1,6 @@
 """AI-assisted prompt configuration generator.
 
-Uses a strong LLM to generate ``ClassificationPrompt`` configurations from
+Uses a strong LLM to generate ``BasePrompt`` configurations from
 natural language task descriptions.  The generated configs can be previewed,
 tested via the ``debug`` command, and exported as reusable ``.py`` files.
 """
@@ -15,15 +15,14 @@ from typing import Any, cast
 import httpx
 from loguru import logger
 
-from immich_classify.prompt import ClassificationPrompt
-
+from immich_classify.prompt_base import BasePrompt
 
 # ── Meta-prompt for the generator LLM ──────────────────────────────
 
 _GENERATOR_SYSTEM_PROMPT = """\
 You are an expert at designing image classification schemas for Vision Language Models.
 
-Given a user's task description, generate a ClassificationPrompt configuration as a JSON object with these exact fields:
+Given a user's task description, generate a BasePrompt configuration as a JSON object with these exact fields:
 
 {
   "prompt_type": "custom",
@@ -64,7 +63,7 @@ class PromptGeneratorError(Exception):
 
 
 class PromptGenerator:
-    """Generate ClassificationPrompt configs using a strong LLM.
+    """Generate BasePrompt configs using a strong LLM.
 
     This class calls an OpenAI-compatible text API (which may differ from
     the VLM used for image classification) to turn natural language
@@ -100,15 +99,15 @@ class PromptGenerator:
         """Close the HTTP client."""
         await self._client.aclose()
 
-    async def generate(self, description: str) -> ClassificationPrompt:
-        """Generate a ClassificationPrompt from a natural language description.
+    async def generate(self, description: str) -> BasePrompt:
+        """Generate a BasePrompt from a natural language description.
 
         Args:
             description: What the user wants to classify or detect
                 (e.g. "detect whether people in photos are smiling").
 
         Returns:
-            A ClassificationPrompt instance with generated system/user prompts
+            A BasePrompt instance with generated system/user prompts
             and schema fields.
 
         Raises:
@@ -171,7 +170,7 @@ class PromptGenerator:
         if match:
             content = match.group(1).strip()
 
-        # Parse as JSON → ClassificationPrompt
+        # Parse as JSON → BasePrompt
         try:
             parsed: Any = json.loads(content)
         except json.JSONDecodeError as exc:
@@ -200,7 +199,7 @@ class PromptGenerator:
             )
 
         try:
-            return ClassificationPrompt.from_dict(prompt_data)
+            return BasePrompt.from_dict(prompt_data)
         except (KeyError, AssertionError) as exc:
             raise PromptGeneratorError(
                 f"Generated config has invalid structure: {exc}",
@@ -208,8 +207,8 @@ class PromptGenerator:
             ) from exc
 
 
-def export_as_python(prompt: ClassificationPrompt, path: str) -> None:
-    """Export a ClassificationPrompt as a loadable Python file.
+def export_as_python(prompt: BasePrompt, path: str) -> None:
+    """Export a BasePrompt as a loadable Python file.
 
     The generated file defines a ``prompt`` variable that can be used
     with ``--prompt-config``.
@@ -224,9 +223,9 @@ def export_as_python(prompt: ClassificationPrompt, path: str) -> None:
         "Load with: immich-classify classify --prompt-config THIS_FILE.py",
         '"""',
         "",
-        "from immich_classify.prompt import ClassificationPrompt, SchemaField",
+        "from immich_classify.prompt_base import BasePrompt, SchemaField",
         "",
-        "prompt = ClassificationPrompt(",
+        "prompt = BasePrompt(",
         f"    prompt_type={prompt.prompt_type!r},",
         f"    system_prompt=(",
     ]

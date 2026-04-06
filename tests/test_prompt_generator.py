@@ -8,7 +8,7 @@ import tempfile
 
 import pytest
 
-from immich_classify.prompt import ClassificationPrompt, SchemaField
+from immich_classify.prompt_base import BasePrompt, SchemaField
 from immich_classify.prompt_generator import (
     PromptGenerator,
     PromptGeneratorError,
@@ -20,20 +20,20 @@ class TestExportAsPython:
     """Tests for export_as_python utility."""
 
     def test_export_creates_file(self) -> None:
-        prompt = ClassificationPrompt()
+        prompt = BasePrompt()
         with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
             path = f.name
         try:
             export_as_python(prompt, path)
             assert os.path.exists(path)
             content = open(path).read()
-            assert "prompt = ClassificationPrompt(" in content
+            assert "prompt = BasePrompt(" in content
             assert "SchemaField" in content
         finally:
             os.unlink(path)
 
     def test_export_contains_all_schema_fields(self) -> None:
-        prompt = ClassificationPrompt(
+        prompt = BasePrompt(
             prompt_type="custom",
             schema={
                 "has_smile": SchemaField(
@@ -67,7 +67,7 @@ class TestExportAsPython:
 
     def test_exported_file_is_loadable(self) -> None:
         """Verify the exported .py file can be exec'd and contains a valid prompt."""
-        prompt = ClassificationPrompt(
+        prompt = BasePrompt(
             prompt_type="test_export",
             system_prompt="Test system prompt",
             user_prompt="Test {schema_description} prompt",
@@ -91,7 +91,7 @@ class TestExportAsPython:
             spec.loader.exec_module(module)
 
             loaded = getattr(module, "prompt", None)
-            assert isinstance(loaded, ClassificationPrompt)
+            assert isinstance(loaded, BasePrompt)
             assert loaded.prompt_type == "test_export"
             assert "field_a" in loaded.schema
             assert "field_b" in loaded.schema
@@ -153,7 +153,7 @@ class TestPromptGenerator:
 
         try:
             result = await generator.generate("find cats in photos")
-            assert isinstance(result, ClassificationPrompt)
+            assert isinstance(result, BasePrompt)
             assert "has_cat" in result.schema
             assert result.schema["has_cat"].field_type == "bool"
             assert "cat_count" in result.schema

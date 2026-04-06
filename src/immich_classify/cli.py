@@ -19,19 +19,21 @@ from immich_classify.config import Config, load_config
 from immich_classify.database import Database
 from immich_classify.engine import TaskEngine, debug_classify
 from immich_classify.immich_client import ImmichClient
-from immich_classify.prompt import ClassificationPrompt
+from immich_classify.prompt_base import BasePrompt
+from immich_classify.prompts.classification import ClassificationPrompt
 from immich_classify.prompt_generator import PromptGenerator, PromptGeneratorError, export_as_python
 from immich_classify.vlm_client import VLMClient
 
 
-def _load_prompt_config(path: str | None) -> ClassificationPrompt:
-    """Load a ClassificationPrompt from a Python file or return default.
+def _load_prompt_config(path: str | None) -> BasePrompt:
+    """Load a BasePrompt from a Python file or return default.
 
     Args:
-        path: Optional path to a Python file containing a ClassificationPrompt instance.
+        path: Optional path to a Python file containing a BasePrompt instance.
+            When *None*, the built-in ``ClassificationPrompt`` is used.
 
     Returns:
-        ClassificationPrompt instance.
+        BasePrompt instance.
     """
     if path is None:
         return ClassificationPrompt()
@@ -48,16 +50,16 @@ def _load_prompt_config(path: str | None) -> ClassificationPrompt:
     if prompt is None:
         prompt = getattr(module, "PROMPT", None)
     if prompt is None:
-        # Try to find any ClassificationPrompt instance
+        # Try to find any BasePrompt instance
         for attr_name in dir(module):
             attr = getattr(module, attr_name)
-            if isinstance(attr, ClassificationPrompt):
+            if isinstance(attr, BasePrompt):
                 prompt = attr
                 break
 
-    if not isinstance(prompt, ClassificationPrompt):
+    if not isinstance(prompt, BasePrompt):
         logger.error(
-            "Could not find a ClassificationPrompt instance in {}. "
+            "Could not find a BasePrompt instance in {}. "
             "Define a variable named 'prompt' or 'PROMPT'.",
             path,
         )

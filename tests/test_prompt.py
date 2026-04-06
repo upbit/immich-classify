@@ -1,17 +1,15 @@
-"""Tests for prompt and schema definitions."""
+"""Tests for prompt base and classification prompt."""
 
 from __future__ import annotations
 
 import json
 
-from immich_classify.prompt import (
-    ClassificationPrompt,
-    PersonFilterPrompt,
+from immich_classify.prompt_base import (
+    BasePrompt,
+    PROMPT_REGISTRY,
     SchemaField,
-    SmileDetectionPrompt,
-    TaggingPrompt,
-    _PROMPT_REGISTRY,
 )
+from immich_classify.prompts.classification import ClassificationPrompt
 
 
 class TestSchemaField:
@@ -121,7 +119,7 @@ class TestClassificationPrompt:
         # Verify it's JSON-serializable
         json_str = json.dumps(data)
         restored_data = json.loads(json_str)
-        restored = ClassificationPrompt.from_dict(restored_data)
+        restored = BasePrompt.from_dict(restored_data)
 
         assert restored.system_prompt == original.system_prompt
         assert restored.user_prompt == original.user_prompt
@@ -133,7 +131,7 @@ class TestClassificationPrompt:
             assert restored.schema[name].enum == original.schema[name].enum
 
     def test_from_dict_backward_compat_no_prompt_type(self) -> None:
-        """Old data without prompt_type should default to 'classification'."""
+        """Old data without prompt_type should fall back to BasePrompt."""
         data = {
             "system_prompt": "test",
             "user_prompt": "test {schema_description}",
@@ -141,9 +139,8 @@ class TestClassificationPrompt:
                 "foo": {"field_type": "string", "description": "a field"},
             },
         }
-        prompt = ClassificationPrompt.from_dict(data)
-        assert prompt.prompt_type == "classification"
-        assert isinstance(prompt, ClassificationPrompt)
+        prompt = BasePrompt.from_dict(data)
+        assert isinstance(prompt, BasePrompt)
 
     def test_custom_schema(self) -> None:
         custom = ClassificationPrompt(
@@ -167,23 +164,17 @@ class TestClassificationPrompt:
 class TestPromptRegistry:
     """Tests for the prompt registry mechanism."""
 
-    def test_all_prompt_types_registered(self) -> None:
-        assert "classification" in _PROMPT_REGISTRY
-        assert "tagging" in _PROMPT_REGISTRY
-        assert "smile_detection" in _PROMPT_REGISTRY
-        assert "person_filter" in _PROMPT_REGISTRY
+    def test_classification_registered(self) -> None:
+        assert "classification" in PROMPT_REGISTRY
 
-    def test_registry_maps_to_correct_classes(self) -> None:
-        assert _PROMPT_REGISTRY["classification"] is ClassificationPrompt
-        assert _PROMPT_REGISTRY["tagging"] is TaggingPrompt
-        assert _PROMPT_REGISTRY["smile_detection"] is SmileDetectionPrompt
-        assert _PROMPT_REGISTRY["person_filter"] is PersonFilterPrompt
+    def test_registry_maps_to_correct_class(self) -> None:
+        assert PROMPT_REGISTRY["classification"] is ClassificationPrompt
 
     def test_from_dict_dispatches_to_subclass(self) -> None:
-        data = SmileDetectionPrompt().to_dict()
-        restored = ClassificationPrompt.from_dict(data)
-        assert isinstance(restored, SmileDetectionPrompt)
-        assert restored.prompt_type == "smile_detection"
+        data = ClassificationPrompt().to_dict()
+        restored = BasePrompt.from_dict(data)
+        assert isinstance(restored, ClassificationPrompt)
+        assert restored.prompt_type == "classification"
 
     def test_from_dict_unknown_type_falls_back_to_base(self) -> None:
         data = {
@@ -194,70 +185,6 @@ class TestPromptRegistry:
                 "x": {"field_type": "bool", "description": "test"},
             },
         }
-        prompt = ClassificationPrompt.from_dict(data)
-        assert isinstance(prompt, ClassificationPrompt)
+        prompt = BasePrompt.from_dict(data)
+        assert isinstance(prompt, BasePrompt)
         assert prompt.prompt_type == "unknown_custom_type"
-
-
-class TestTaggingPrompt:
-    """Tests for TaggingPrompt."""
-
-    def test_defaults(self) -> None:
-        prompt = TaggingPrompt()
-        assert prompt.prompt_type == "tagging"
-        assert "tags" in prompt.schema
-        assert "scene" in prompt.schema
-
-    def test_is_classification_prompt(self) -> None:
-        assert isinstance(TaggingPrompt(), ClassificationPrompt)
-
-    def test_roundtrip(self) -> None:
-        original = TaggingPrompt()
-        data = original.to_dict()
-        restored = ClassificationPrompt.from_dict(data)
-        assert isinstance(restored, TaggingPrompt)
-        assert restored.prompt_type == "tagging"
-        assert set(restored.schema.keys()) == set(original.schema.keys())
-
-
-class TestSmileDetectionPrompt:
-    """Tests for SmileDetectionPrompt."""
-
-    def test_defaults(self) -> None:
-        prompt = SmileDetectionPrompt()
-        assert prompt.prompt_type == "smile_detection"
-        assert "has_people" in prompt.schema
-        assert "has_smile" in prompt.schema
-        assert "smile_count" in prompt.schema
-        assert "expression" in prompt.schema
-
-    def test_is_classification_prompt(self) -> None:
-        assert isinstance(SmileDetectionPrompt(), ClassificationPrompt)
-
-    def test_json_schema_has_optional_fields(self) -> None:
-        prompt = SmileDetectionPrompt()
-        schema = prompt.build_json_schema()
-        # has_people has no default, so it's required
-        assert "has_people" in schema["required"]
-        # has_smile has a default, so NOT required
-        assert "has_smile" not in schema["required"]
-
-
-class TestPersonFilterPrompt:
-    """Tests for PersonFilterPrompt."""
-
-    def test_defaults(self) -> None:
-        prompt = PersonFilterPrompt()
-        assert prompt.prompt_type == "person_filter"
-        assert "has_person" in prompt.schema
-        assert "person_count" in prompt.schema
-        assert "is_portrait" in prompt.schema
-
-    def test_is_classification_prompt(self) -> None:
-        assert isinstance(PersonFilterPrompt(), ClassificationPrompt)
-
-    def test_roundtrip(self) -> None:
-        original = PersonFilterPrompt()
-        data = original.to_dict()
-        restored = ClassificationPrompt.from_dict(data)
-        assert isinstance(restored, PersonFilterPrompt)

@@ -7,7 +7,7 @@ import json
 import httpx
 import pytest
 
-from immich_classify.prompt import ClassificationPrompt
+from immich_classify.prompts.classification import ClassificationPrompt
 from immich_classify.vlm_client import VLMClient, VLMError, _strip_markdown_json
 
 

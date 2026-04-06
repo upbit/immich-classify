@@ -12,7 +12,7 @@ from loguru import logger
 from immich_classify.config import Config
 from immich_classify.database import Database
 from immich_classify.immich_client import Asset, ImmichClient
-from immich_classify.prompt import ClassificationPrompt
+from immich_classify.prompt_base import BasePrompt
 from immich_classify.vlm_client import VLMClient, VLMError
 
 
@@ -39,7 +39,7 @@ class TaskEngine:
     async def create_and_run_task(
         self,
         album_ids: list[str],
-        prompt_config: ClassificationPrompt,
+        prompt_config: BasePrompt,
         concurrency: int | None = None,
     ) -> str:
         """Create a new task and run it.
@@ -109,7 +109,7 @@ class TaskEngine:
             )
             return
 
-        prompt_config = ClassificationPrompt.from_dict(json.loads(task["prompt_config"]))
+        prompt_config = BasePrompt.from_dict(json.loads(task["prompt_config"]))
         effective_concurrency = concurrency if concurrency is not None else self._config.concurrency
         self._cancelled = False
 
@@ -118,7 +118,7 @@ class TaskEngine:
     async def _run_task(
         self,
         task_id: str,
-        prompt_config: ClassificationPrompt,
+        prompt_config: BasePrompt,
         concurrency: int,
     ) -> None:
         """Execute the classification task.
@@ -177,7 +177,7 @@ class TaskEngine:
         self,
         task_id: str,
         asset_id: str,
-        prompt_config: ClassificationPrompt,
+        prompt_config: BasePrompt,
         counter: _Counter,
         total: int,
     ) -> None:
@@ -263,7 +263,7 @@ async def debug_classify(
     immich_client: ImmichClient,
     vlm_client: VLMClient,
     album_id: str,
-    prompt_config: ClassificationPrompt,
+    prompt_config: BasePrompt,
     count: int = 10,
 ) -> list[dict[str, Any]]:
     """Run a small debug batch of classifications without writing to the database.

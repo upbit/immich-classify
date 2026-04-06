@@ -9,7 +9,7 @@ from typing import Any, cast
 import httpx
 from loguru import logger
 
-from immich_classify.prompt import ClassificationPrompt
+from immich_classify.prompt_base import BasePrompt
 
 
 class VLMError(Exception):
@@ -83,7 +83,7 @@ class VLMClient:
     async def classify_image(
         self,
         image_base64: str,
-        prompt_config: ClassificationPrompt,
+        prompt_config: BasePrompt,
         content_type: str = "image/jpeg",
     ) -> dict[str, Any]:
         """Send an image to the VLM for classification.

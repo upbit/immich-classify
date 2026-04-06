@@ -13,7 +13,7 @@ CLI ──Immich API──> Immich Server (albums / assets / thumbnails)
 ## Features
 
 - **Universal VLM support** - Works with vLLM, Ollama, OpenAI, and any OpenAI-compatible API via structured output (`response_format`)
-- **Customizable schema** - Define your own classification fields (category, tags, quality, NSFW, etc.) through Python dataclasses, or use built-in presets for common tasks
+- **Customizable schema** - Define your own classification fields (category, tags, quality, NSFW, etc.) by subclassing `BasePrompt`, or use built-in presets for common tasks
 - **AI-assisted prompt generation** - Describe your goal in natural language and let a strong LLM generate the prompt config for you
 - **Async & concurrent** - Built on `asyncio` + `httpx` with configurable concurrency via semaphore
 - **Resumable tasks** - Every result is persisted immediately; pause/resume without losing progress
@@ -110,18 +110,28 @@ immich-classify cancel --task <id>      Cancel a task (keeps existing results).
 
 ### Custom classification schema
 
-Create a Python file with a `ClassificationPrompt` instance:
+Create a Python file that subclasses `BasePrompt` with a `@register_prompt` decorator:
 
 ```python
 # my_schema.py
-from immich_classify.prompt import ClassificationPrompt, SchemaField
+from dataclasses import dataclass, field
 
-prompt = ClassificationPrompt(
-    system_prompt=(
+from immich_classify.prompt_base import BasePrompt, SchemaField, register_prompt
+
+@register_prompt
+@dataclass
+class MyPrompt(BasePrompt):
+    prompt_type: str = "my_custom"
+    system_prompt: str = (
         "You are a photo organizer. Classify the image into the given schema. "
         "Output ONLY valid JSON."
-    ),
-    schema={
+    )
+    user_prompt: str = (
+        "Classify this image according to the following schema:\n"
+        "{schema_description}\n\n"
+        "Output a JSON object with the specified fields."
+    )
+    schema: dict[str, SchemaField] = field(default_factory=lambda: {
         "scene": SchemaField(
             field_type="string",
             description="Scene type",
@@ -139,8 +149,9 @@ prompt = ClassificationPrompt(
             field_type="list[string]",
             description="Descriptive tags",
         ),
-    },
-)
+    })
+
+prompt = MyPrompt()
 ```
 
 Then use it:
@@ -149,22 +160,42 @@ Then use it:
 immich-classify classify --album <id> --prompt-config my_schema.py
 ```
 
-### Built-in prompt presets
+### Built-in prompt
 
-Several pre-configured prompt classes are provided for common tasks. You can use them directly in your config files without writing a full schema:
+A default `ClassificationPrompt` is provided in `src/immich_classify/prompts/classification.py`:
 
 | Class | `prompt_type` | Fields | Use case |
 |-------|---------------|--------|----------|
 | `ClassificationPrompt` | `classification` | category, quality, tags | General image classification (default) |
-| `TaggingPrompt` | `tagging` | tags, scene | Descriptive image tagging |
-| `SmileDetectionPrompt` | `smile_detection` | has_people, has_smile, smile_count, expression | Facial expression analysis |
-| `PersonFilterPrompt` | `person_filter` | has_person, person_count, is_portrait | Filter images by person presence |
 
-Example using a preset:
+When no `--prompt-config` is specified, the CLI uses this prompt automatically.
+
+You can subclass `BasePrompt` to create your own prompt for any task:
 
 ```python
 # smile_check.py
-from immich_classify.prompt import SmileDetectionPrompt
+from dataclasses import dataclass, field
+
+from immich_classify.prompt_base import BasePrompt, SchemaField, register_prompt
+
+@register_prompt
+@dataclass
+class SmileDetectionPrompt(BasePrompt):
+    prompt_type: str = "smile_detection"
+    system_prompt: str = (
+        "You are a facial expression analysis assistant. "
+        "Analyze the given image for people and their expressions. "
+        "Output ONLY valid JSON, no other text."
+    )
+    user_prompt: str = (
+        "Analyze facial expressions in this image:\n"
+        "{schema_description}\n\n"
+        "Output a JSON object."
+    )
+    schema: dict[str, SchemaField] = field(default_factory=lambda: {
+        "has_people": SchemaField(field_type="bool", description="Whether the image contains people"),
+        "has_smile": SchemaField(field_type="bool", description="Whether anyone is smiling", default=False),
+    })
 
 prompt = SmileDetectionPrompt()
 ```
@@ -173,24 +204,6 @@ prompt = SmileDetectionPrompt()
 # Classify and then filter for smiling photos
 immich-classify classify --album <id> --prompt-config smile_check.py
 immich-classify results --task <id> --filter has_smile=true
-```
-
-You can also subclass any preset to customize it further:
-
-```python
-# custom_person_filter.py
-from immich_classify.prompt import PersonFilterPrompt, SchemaField
-
-prompt = PersonFilterPrompt(
-    schema={
-        **PersonFilterPrompt().schema,
-        "age_group": SchemaField(
-            field_type="string",
-            description="Estimated age group of the main subject",
-            enum=["child", "teen", "adult", "senior", "unknown"],
-        ),
-    },
-)
 ```
 
 ### AI-assisted prompt generation
@@ -236,7 +249,9 @@ immich-classify results --task <id> --filter has_cat=true
 ```
 src/immich_classify/
 ├── config.py              # Config dataclass, .env loading, validation
-├── prompt.py              # ClassificationPrompt base class, presets & SchemaField
+├── prompt_base.py         # BasePrompt base class, SchemaField & prompt registry
+├── prompts/
+│   └── classification.py  # ClassificationPrompt - default implementation
 ├── prompt_generator.py    # AI-assisted prompt config generation & export
 ├── immich_client.py       # Async Immich API client (httpx)
 ├── vlm_client.py          # Async OpenAI-compatible VLM client (httpx)
@@ -248,7 +263,7 @@ src/immich_classify/
 
 **Key design decisions:**
 
-- **Prompt inheritance** - `ClassificationPrompt` serves as both the base class and the default configuration. Subclasses only override default values (no abstract methods), keeping the VLM call path identical for all prompt types. A `prompt_type` discriminator field and registry enable correct deserialization from the database.
+- **Base / implementation separation** - ``BasePrompt`` in ``prompt_base.py`` provides schema tooling, JSON (de)serialization and the ``register_prompt`` decorator.  Concrete prompts live under ``prompts/`` and are discovered via the registry, making it easy to add AI-generated prompts as new files.
 - **SQLite with `json_extract()`** - Classification fields are fully dynamic. Results are stored as JSON and queried with SQLite's JSON functions, so no schema migration is needed when fields change.
 - **Structured Output** - Uses `response_format: { type: "json_schema" }` to enforce valid JSON output from the VLM, rather than fragile regex parsing.
 - **Per-asset persistence** - Each image result is committed immediately. A crash or interrupt loses at most the in-flight images, not the entire batch.
@@ -269,12 +284,12 @@ uv run pyright src/immich_classify/
 
 ### Test suite
 
-104 tests covering all modules:
+95 tests covering all modules:
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
 | `config.py` | 8 | Validation, env loading, defaults, missing fields |
-| `prompt.py` | 29 | Schema generation, JSON schema, serialization roundtrip, registry, presets |
+| `prompt_base.py` + `prompts/` | 20 | Schema generation, JSON schema, serialization roundtrip, registry |
 | `prompt_generator.py` | 6 | Export to Python, AI generation with mock, error handling |
 | `database.py` | 11 | CRUD, filtering with `json_extract`, deduplication |
 | `immich_client.py` | 5 | Album listing, asset filtering, image download |
