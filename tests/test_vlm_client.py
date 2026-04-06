@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from immich_classify.prompt import ClassificationPrompt
-from immich_classify.vlm_client import VLMClient, VLMError
+from immich_classify.vlm_client import VLMClient, VLMError, _strip_markdown_json
 
 
 def _make_vlm_client(handler: httpx.MockTransport) -> VLMClient:
@@ -172,3 +172,84 @@ class TestVLMClassify:
         assert isinstance(schema, dict)
         assert "category" in schema["properties"]
         await client.close()
+
+    @pytest.mark.asyncio
+    async def test_markdown_wrapped_json_is_parsed(self) -> None:
+        """VLM returns JSON wrapped in ```json ... ``` — should be parsed correctly."""
+        wrapped_content = '```json\n{"category": "architecture", "quality": "medium", "tags": ["building"]}\n```'
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {"finish_reason": "stop", "message": {"content": wrapped_content}}
+                    ]
+                },
+            )
+
+        client = _make_vlm_client(httpx.MockTransport(handler))
+        result = await client.classify_image("base64data", ClassificationPrompt())
+        assert result["category"] == "architecture"
+        assert result["quality"] == "medium"
+        assert result["tags"] == ["building"]
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_markdown_wrapped_no_language_tag(self) -> None:
+        """VLM returns JSON wrapped in ``` ... ``` (no language tag)."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {"finish_reason": "stop", "message": {"content": '```\n{"category": "food"}\n```'}}
+                    ]
+                },
+            )
+
+        client = _make_vlm_client(httpx.MockTransport(handler))
+        result = await client.classify_image("base64data", ClassificationPrompt())
+        assert result["category"] == "food"
+        await client.close()
+
+
+class TestStripMarkdownJson:
+    """Tests for _strip_markdown_json utility function."""
+
+    def test_plain_json_unchanged(self) -> None:
+        text = '{"category": "people"}'
+        assert _strip_markdown_json(text) == text
+
+    def test_strip_json_code_block(self) -> None:
+        text = '```json\n{"category": "food"}\n```'
+        assert _strip_markdown_json(text) == '{"category": "food"}'
+
+    def test_strip_bare_code_block(self) -> None:
+        text = '```\n{"key": "value"}\n```'
+        assert _strip_markdown_json(text) == '{"key": "value"}'
+
+    def test_strip_with_extra_whitespace(self) -> None:
+        text = '  ```json\n  {"a": 1}  \n```  '
+        result = _strip_markdown_json(text)
+        assert json.loads(result) == {"a": 1}
+
+    def test_strip_JSON_uppercase_tag(self) -> None:
+        text = '```JSON\n{"x": 1}\n```'
+        assert _strip_markdown_json(text) == '{"x": 1}'
+
+    def test_multiline_json_preserved(self) -> None:
+        text = '```json\n{\n  "category": "landscape",\n  "tags": ["sky", "mountain"]\n}\n```'
+        result = _strip_markdown_json(text)
+        parsed = json.loads(result)
+        assert parsed["category"] == "landscape"
+        assert parsed["tags"] == ["sky", "mountain"]
+
+    def test_no_code_block_returns_original(self) -> None:
+        text = "This is not JSON at all"
+        assert _strip_markdown_json(text) == text
+
+    def test_partial_code_block_returns_original(self) -> None:
+        text = '```json\n{"incomplete": true}'
+        assert _strip_markdown_json(text) == text

@@ -163,11 +163,41 @@ async def cmd_debug(
                     r["status"],
                     result_str,
                 ])
+            print()
             print(tabulate(
                 table_data,
                 headers=["Asset ID", "File Name", "Status", "Result"],
                 tablefmt="simple",
             ))
+
+            # Print summary and diagnostic hints for failures
+            success_count = sum(1 for r in results if r["status"] == "success")
+            failed_count = sum(1 for r in results if r["status"] != "success")
+            print(f"\n  Total: {len(results)} | Success: {success_count} | Failed: {failed_count}")
+
+            if failed_count > 0:
+                print("\n── Diagnostic Details ──")
+                for r in results:
+                    if r["status"] != "success":
+                        print(f"\n  Asset: {r['asset_id']}")
+                        print(f"  File:  {r['file_name']}")
+                        print(f"  Error: {r.get('error', 'unknown')}")
+                        raw = r.get("raw_response")
+                        if raw:
+                            # Truncate very long responses
+                            display_raw = raw[:2000]
+                            if len(raw) > 2000:
+                                display_raw += f"\n  ... ({len(raw) - 2000} more chars)"
+                            print(f"  Raw response:\n    {display_raw}")
+                        else:
+                            print("  Raw response: (none captured)")
+
+                print("\n── Troubleshooting Tips ──")
+                print("  1. Check VLM_API_URL and VLM_MODEL_NAME in .env")
+                print("  2. Verify the model supports vision/image input")
+                print("  3. Verify the model supports structured output (response_format)")
+                print("  4. Try a different model or increase CLASSIFY_TIMEOUT")
+                print("  5. Run with LOGURU_LEVEL=DEBUG for full request/response logs")
     except Exception as exc:
         logger.error("Debug classification failed: {}", exc)
         sys.exit(1)

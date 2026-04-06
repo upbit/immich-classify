@@ -290,6 +290,16 @@ async def debug_classify(
     sample = random.sample(assets, sample_size)
 
     results: list[dict[str, Any]] = []
+
+    logger.info("─── Debug Classification ───")
+    logger.info("Album: {} | Sample size: {} | Image size: {}", album_id, sample_size, config.image_size)
+    logger.info("VLM: {} | Model: {}", config.vlm_api_url, config.vlm_model_name or "(server default)")
+    logger.info(
+        "Schema fields: {}",
+        ", ".join(f"{k} ({v.field_type})" for k, v in prompt_config.schema.items()),
+    )
+    logger.info("────────────────────────────")
+
     for i, asset in enumerate(sample, 1):
         try:
             image_base64, content_type = await immich_client.download_image_base64(
@@ -316,6 +326,7 @@ async def debug_classify(
                 "file_name": asset.original_file_name,
                 "status": "failed",
                 "error": str(exc),
+                "raw_response": exc.raw_response,
             })
             logger.warning(
                 "[{}/{}] {} ({}) - FAILED: {}",
@@ -325,6 +336,8 @@ async def debug_classify(
                 asset.original_file_name,
                 exc,
             )
+            if exc.raw_response:
+                logger.debug("Raw VLM response:\n{}", exc.raw_response[:3000])
         except Exception as exc:
             results.append({
                 "asset_id": asset.asset_id,
