@@ -326,4 +326,7 @@ uv run pyright src/immich_classify/
 
 ## License
 
-MIT
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+License: MIT — see the [LICENSE](LICENSE) file for details.
+
