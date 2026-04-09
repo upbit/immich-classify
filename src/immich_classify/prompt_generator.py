@@ -14,6 +14,7 @@ import textwrap
 from typing import Any, cast
 
 import httpx
+import jinja2
 from loguru import logger
 
 from immich_classify.prompt_base import BasePrompt
@@ -230,6 +231,67 @@ def _derive_class_name(file_path: str) -> str:
     return pascal
 
 
+# ── Jinja2 template for exported prompt files ──────────────────────
+
+_JINJA_ENV = jinja2.Environment(
+    undefined=jinja2.StrictUndefined,
+    keep_trailing_newline=True,
+)
+_JINJA_ENV.filters["repr"] = repr
+
+_EXPORT_TEMPLATE = _JINJA_ENV.from_string(
+    '''\
+"""Auto-generated prompt configuration.
+
+Load with: immich-classify classify --prompt-config {{ filename }}
+"""
+
+from dataclasses import dataclass, field
+
+from immich_classify.prompt_base import BasePrompt, SchemaField, register_prompt
+
+
+@register_prompt
+@dataclass
+class {{ class_name }}(BasePrompt):
+    """Auto-generated prompt: {{ prompt_name }}."""
+
+    name: str = {{ prompt_name | repr }}
+
+    system_prompt: str = (
+{% for line in system_prompt_lines %}
+        {{ line | repr }}
+{% endfor %}
+    )
+
+    user_prompt: str = (
+{% for line in user_prompt_lines %}
+        {{ line | repr }}
+{% endfor %}
+    )
+
+    schema: dict[str, SchemaField] = field(default_factory=lambda: {
+{% for field_name, sf in schema_items %}
+        {{ field_name | repr }}: SchemaField(
+            field_type={{ sf.field_type | repr }},
+            description={{ sf.description | repr }},
+{% if sf.enum is not none %}
+            enum={{ sf.enum | repr }},
+{% endif %}
+{% if sf.default is not none %}
+            default={{ sf.default | repr }},
+{% endif %}
+        ),
+{% endfor %}
+    })
+
+
+# Module-level instance for --prompt-config loading
+prompt = {{ class_name }}()
+'''
+)
+
+
 def export_as_python(prompt: BasePrompt, path: str) -> None:
     """Export a BasePrompt as a loadable Python file with a class definition.
 
@@ -238,71 +300,34 @@ def export_as_python(prompt: BasePrompt, path: str) -> None:
     ``@dataclass``, plus a module-level ``prompt`` instance for backward
     compatibility with ``--prompt-config``.
 
+    Uses a Jinja2 template for clearer structure and easier maintenance.
+
     Args:
         prompt: The prompt configuration to export.
         path: File path to write to.
     """
     class_name = _derive_class_name(path)
-    # Derive a snake_case prompt name from the file stem (e.g. "image_tags")
     prompt_name = os.path.splitext(os.path.basename(path))[0]
 
-    lines: list[str] = [
-        '"""Auto-generated prompt configuration.',
-        "",
-        f"Load with: immich-classify classify --prompt-config {os.path.basename(path)}",
-        '"""',
-        "",
-        "from dataclasses import dataclass, field",
-        "",
-        "from immich_classify.prompt_base import BasePrompt, SchemaField, register_prompt",
-        "",
-        "",
-        "@register_prompt",
-        "@dataclass",
-        f"class {class_name}(BasePrompt):",
-        f'    """Auto-generated prompt: {prompt_name}."""',
-        "",
-        f"    name: str = {prompt_name!r}",
-        "",
-        "    system_prompt: str = (",
+    # Wrap system_prompt lines to stay within PEP 8 line width
+    system_prompt_lines = textwrap.wrap(prompt.system_prompt, width=72)
+
+    # Split user_prompt by newlines, appending \n to each segment
+    # so the reconstructed string preserves original line breaks
+    user_prompt_lines = [
+        line + "\n" for line in prompt.user_prompt.split("\n")
     ]
 
-    # Wrap long strings nicely
-    for line in textwrap.wrap(prompt.system_prompt, width=72):
-        lines.append(f"        {line!r}")
-    lines.append("    )")
-    lines.append("")
-
-    lines.append("    user_prompt: str = (")
-    for line in prompt.user_prompt.split("\n"):
-        lines.append(f"        {(line + chr(10))!r}")
-    lines.append("    )")
-    lines.append("")
-
-    lines.append("    schema: dict[str, SchemaField] = field(default_factory=lambda: {")
-    for name, sf in prompt.schema.items():
-        parts: list[str] = [
-            f"        {name!r}: SchemaField(",
-            f"            field_type={sf.field_type!r},",
-            f"            description={sf.description!r},",
-        ]
-        if sf.enum is not None:
-            parts.append(f"            enum={sf.enum!r},")
-        if sf.default is not None:
-            parts.append(f"            default={sf.default!r},")
-        parts.append("        ),")
-        lines.extend(parts)
-
-    lines.extend([
-        "    })",
-        "",
-        "",
-        f"# Module-level instance for --prompt-config loading",
-        f"prompt = {class_name}()",
-        "",
-    ])
+    rendered = _EXPORT_TEMPLATE.render(
+        filename=os.path.basename(path),
+        class_name=class_name,
+        prompt_name=prompt_name,
+        system_prompt_lines=system_prompt_lines,
+        user_prompt_lines=user_prompt_lines,
+        schema_items=list(prompt.schema.items()),
+    )
 
     with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+        f.write(rendered)
 
     logger.info("Exported prompt config to {}", path)
