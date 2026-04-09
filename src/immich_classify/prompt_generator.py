@@ -259,30 +259,30 @@ class {{ class_name }}(BasePrompt):
     name: str = {{ prompt_name | repr }}
 
     system_prompt: str = (
-{% for line in system_prompt_lines %}
+{%- for line in system_prompt_lines %}
         {{ line | repr }}
-{% endfor %}
+{%- endfor %}
     )
 
     user_prompt: str = (
-{% for line in user_prompt_lines %}
+{%- for line in user_prompt_lines %}
         {{ line | repr }}
-{% endfor %}
+{%- endfor %}
     )
 
     schema: dict[str, SchemaField] = field(default_factory=lambda: {
-{% for field_name, sf in schema_items %}
+{%- for field_name, sf in schema_items %}
         {{ field_name | repr }}: SchemaField(
             field_type={{ sf.field_type | repr }},
             description={{ sf.description | repr }},
-{% if sf.enum is not none %}
+{%- if sf.enum is not none %}
             enum={{ sf.enum | repr }},
-{% endif %}
-{% if sf.default is not none %}
+{%- endif %}
+{%- if sf.default is not none %}
             default={{ sf.default | repr }},
-{% endif %}
+{%- endif %}
         ),
-{% endfor %}
+{%- endfor %}
     })
 
 
