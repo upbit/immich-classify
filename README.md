@@ -12,6 +12,8 @@ A Python CLI tool that classifies photos in [Immich](https://immich.app/) using 
 - **Async & concurrent** - Built on `asyncio` + `httpx` with configurable concurrency via semaphore
 - **Resumable tasks** - Every result is persisted immediately; pause/resume without losing progress
 - **Graceful Ctrl+C** - Interrupt a running task to pause it; resume later from where it stopped
+- **Interactive WebUI** - Launch a browser-based UI (`immich-classify app`) to visually browse, filter, and inspect classification results with thumbnail grid, detail modal, and direct Immich links
+- **Asset status sync** - Sync archived/trashed status from Immich in one click; trashed assets are automatically hidden from results
 - **Flexible export** - Query results with dynamic JSON field filtering; output as table, JSON, or CSV
 - **Type-safe** - Full type annotations passing Pyright strict mode with zero errors
 
@@ -75,6 +77,9 @@ immich-classify results --task <task_id> --filter category=people --format table
 
 # 6. Export for review
 immich-classify results --task <task_id> --format csv > results.csv
+
+# 7. Or launch the WebUI for interactive browsing
+immich-classify app
 ```
 
 ### Commands
@@ -102,6 +107,10 @@ immich-classify results --task <id> [--filter <key=value>]... [--format json|csv
 immich-classify pause --task <id>       Pause a running task.
 immich-classify resume --task <id>      Resume a paused task.
 immich-classify cancel --task <id>      Cancel a task (keeps existing results).
+
+immich-classify app [--port <n>] [--host <addr>] [--no-browser]
+    Launch the interactive WebUI for visual browsing and filtering.
+    Opens your default browser automatically (disable with --no-browser).
 ```
 
 ### Custom classification schema
@@ -218,6 +227,34 @@ immich-classify classify --album <id> --prompt-config smile_check.py
 immich-classify results --task <id> --filter has_smile=true
 ```
 
+### WebUI — interactive browse & filter
+
+The `app` command launches a local web server (FastAPI + uvicorn) that provides a visual interface for browsing and filtering classification results:
+
+```bash
+# Launch with default settings (http://127.0.0.1:8765)
+immich-classify app
+
+# Custom port and host
+immich-classify app --port 9000 --host 0.0.0.0
+
+# Don't auto-open the browser
+immich-classify app --no-browser
+```
+
+**WebUI features:**
+
+- **Task selector** — switch between classification tasks from a dropdown; shows task ID, status, prompt name, and progress
+- **Dynamic filter form** — auto-generated from the task's prompt schema: enum fields become dropdowns, booleans become select boxes, numbers get numeric inputs
+- **Raw filter rows** — add arbitrary `key=value` filters for advanced queries (same semantics as `results --filter`)
+- **Thumbnail grid** — browse all matching results as a responsive image grid with lazy loading and loading spinners
+- **Detail modal** — click any thumbnail to see a larger preview with all classification fields and a direct "Open in Immich" link
+- **Quick Immich link** — each grid card has a hover overlay button (↗) to jump straight to the asset in Immich's web UI
+- **Archived / trashed indicators** — archived assets are visually dimmed with a 📦 badge; trashed assets are hidden from results
+- **Sync status** — click "⟳ Sync Status" to refresh archived/trashed flags from Immich in the background with live progress polling
+
+The WebUI reuses the same filter-and-query pipeline as the `results` CLI subcommand, so filters produce identical results in both interfaces.
+
 ### AI-assisted prompt generation
 
 Don't want to write a schema by hand? Use the `generate` command to let a strong LLM create one from a natural language description:
@@ -270,6 +307,12 @@ src/immich_classify/
 ├── vlm_client.py          # Async OpenAI-compatible VLM client (httpx)
 ├── database.py            # Async SQLite layer (aiosqlite)
 ├── engine.py              # Task execution engine (asyncio + semaphore)
+├── webapp.py              # FastAPI WebUI (thumbnail proxy, filter API, sync)
+├── templates/
+│   └── index.html         # Single-page HTML shell for the WebUI
+├── static/
+│   ├── app.js             # Frontend interaction logic (vanilla JS)
+│   └── app.css            # Responsive grid & modal styles
 ├── cli.py                 # CLI entry point and subcommand handlers
 └── __main__.py            # python -m entry point
 ```
@@ -282,6 +325,7 @@ src/immich_classify/
 - **Robust response parsing** - Automatically handles models that wrap JSON in markdown code blocks or prepend chain-of-thought reasoning before the JSON payload (common with Qwen, LLaMA, and other local models).
 - **Per-asset persistence** - Each image result is committed immediately. A crash or interrupt loses at most the in-flight images, not the entire batch.
 - **Asset deduplication** - When classifying multiple albums, assets appearing in more than one album are automatically deduplicated.
+- **Archived / trashed tracking** - Each classification result stores `is_archived` and `is_trashed` flags synced from Immich. Trashed assets are automatically excluded from query results, and archived assets are visually marked in the WebUI.
 
 ## Development
 
@@ -298,18 +342,19 @@ uv run pyright src/immich_classify/
 
 ### Test suite
 
-102 tests covering all modules:
+116 tests covering all modules:
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
 | `config.py` | 8 | Validation, env loading, defaults, missing fields |
-| `prompt_base.py` + `prompts/` | 20 | Schema generation, JSON schema, serialization roundtrip, registry |
+| `prompt_base.py` + `prompts/` | 17 | Schema generation, JSON schema, serialization roundtrip, registry |
 | `prompt_generator.py` | 6 | Export to Python, AI generation with mock, error handling |
-| `database.py` | 11 | CRUD, filtering with `json_extract`, deduplication |
+| `database.py` | 19 | CRUD, filtering with `json_extract`, deduplication, asset flags, batch update |
 | `immich_client.py` | 5 | Album listing, asset filtering, image download |
 | `vlm_client.py` | 24 | Success, API errors, invalid JSON, structured output, markdown stripping, mixed-content extraction |
 | `engine.py` | 9 | Concurrency, error continuation, pause/resume, dedup |
 | `cli.py` | 19 | Argument parsing, filter parsing, multi-album |
+| `webapp.py` | 9 | Task listing, schema API, result filtering, thumbnail proxy, trashed exclusion |
 
 ## Tech Stack
 
@@ -321,6 +366,7 @@ uv run pyright src/immich_classify/
 | Logging | [loguru](https://github.com/Delgan/loguru) | Structured, colorful, zero config |
 | CLI | argparse | Standard library, no extra dependency |
 | Formatting | [tabulate](https://github.com/astanin/python-tabulate) | Clean table output |
+| WebUI | [FastAPI](https://fastapi.tiangolo.com/) + [uvicorn](https://www.uvicorn.org/) | Async web framework, auto-docs, lifespan management |
 | Type checking | [Pyright](https://github.com/microsoft/pyright) | Strict mode, zero errors |
 | Package manager | [uv](https://docs.astral.sh/uv/) | Fast, reliable, modern |
 
