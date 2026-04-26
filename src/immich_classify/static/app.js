@@ -316,6 +316,21 @@
       card.appendChild(spinner);
       card.appendChild(errEl);
       card.appendChild(img);
+
+      // Quick "Open in Immich" button overlay on each card.
+      if (IMMICH_API_URL) {
+        const immichBtn = document.createElement("a");
+        immichBtn.className = "grid-card__immich-link";
+        immichBtn.href = `${IMMICH_API_URL}/photos/${encodeURIComponent(r.asset_id)}`;
+        immichBtn.target = "_blank";
+        immichBtn.rel = "noopener";
+        immichBtn.title = "Open in Immich";
+        immichBtn.textContent = "\u2197";
+        // Prevent click from bubbling to the card (which opens the modal).
+        immichBtn.addEventListener("click", (ev) => ev.stopPropagation());
+        card.appendChild(immichBtn);
+      }
+
       card.addEventListener("click", () => openModal(r.asset_id));
       frag.appendChild(card);
     }
@@ -363,6 +378,14 @@
       modal.setAttribute("open", "");
     }
   }
+
+  // Close modal when clicking the backdrop (outside the dialog box).
+  modal.addEventListener("click", (ev) => {
+    // <dialog> click target is the dialog itself when the backdrop is clicked.
+    if (ev.target === modal) {
+      modal.close();
+    }
+  });
 
   function appendDt(dl, key, value) {
     const dt = document.createElement("dt");
