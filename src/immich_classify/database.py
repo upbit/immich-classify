@@ -44,6 +44,61 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _coerce_filter_value(raw: str) -> Any:
+    """Coerce a CLI string filter value to its best-match Python/JSON type.
+
+    ``json_extract`` returns the native JSON type (int/float/bool/null/text),
+    so comparing against a bare string can silently miss numeric or boolean
+    fields. Try JSON-parsing first; fall back to the raw string.
+    """
+    stripped = raw.strip()
+    if stripped == "":
+        return raw
+    # ``true``/``false``/``null`` are lowercase in JSON; accept common casings.
+    lowered = stripped.lower()
+    if lowered in ("true", "false"):
+        return 1 if lowered == "true" else 0
+    if lowered == "null":
+        return None
+    try:
+        return json.loads(stripped)
+    except (ValueError, TypeError):
+        return raw
+
+
+class FilterParseError(ValueError):
+    """Raised when a ``key=value`` filter string is malformed."""
+
+
+def parse_filter_strings(filter_args: list[str] | None) -> dict[str, str] | None:
+    """Parse a list of ``key=value`` strings into a dict.
+
+    Shared between the CLI (``results`` subcommand) and the WebUI so both use
+    identical parsing rules. Splits on the first ``=`` only, so values may
+    themselves contain ``=`` characters.
+
+    Args:
+        filter_args: List of ``key=value`` strings, or ``None``.
+
+    Returns:
+        Dict of ``{key: value}`` pairs, or ``None`` if ``filter_args`` is empty.
+
+    Raises:
+        FilterParseError: If any entry lacks a ``=`` separator.
+    """
+    if not filter_args:
+        return None
+    filters: dict[str, str] = {}
+    for f in filter_args:
+        if "=" not in f:
+            raise FilterParseError(
+                f"Invalid filter format: {f!r}. Use key=value."
+            )
+        key, value = f.split("=", 1)
+        filters[key.strip()] = value.strip()
+    return filters
+
+
 class Database:
     """Async SQLite database manager for classification tasks and results."""
 
@@ -264,20 +319,79 @@ class Database:
         Args:
             task_id: The task to query.
             filters: Optional dict of {json_field: value} to filter by.
+                Values are parsed as JSON when possible so that numeric and
+                boolean fields compare correctly against SQLite's
+                ``json_extract`` output (which preserves JSON types).
 
         Returns:
             List of result rows as dictionaries.
         """
+        # Baseline: how many successful rows exist for this task, before filtering.
+        base_cursor = await self.connection.execute(
+            "SELECT COUNT(*) AS n FROM classification_results "
+            "WHERE task_id = ? AND status = 'success'",
+            (task_id,),
+        )
+        base_row = await base_cursor.fetchone()
+        base_count = base_row["n"] if base_row is not None else 0
+        logger.debug(
+            "get_results: task_id={} success_rows={} filters={}",
+            task_id,
+            base_count,
+            filters,
+        )
+
         query = "SELECT * FROM classification_results WHERE task_id = ? AND status = 'success'"
         params: list[Any] = [task_id]
 
         if filters:
-            for key, value in filters.items():
+            for key, raw_value in filters.items():
+                coerced_value = _coerce_filter_value(raw_value)
                 query += f" AND json_extract(result_json, '$.{key}') = ?"
-                params.append(value)
+                params.append(coerced_value)
+                logger.debug(
+                    "get_results: filter json_extract($.{})={!r} (raw={!r}, type={})",
+                    key,
+                    coerced_value,
+                    raw_value,
+                    type(coerced_value).__name__,
+                )
 
+        logger.debug("get_results: SQL={} params={}", query, params)
         cursor = await self.connection.execute(query, params)
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
+        logger.debug(
+            "get_results: task_id={} matched_rows={}/{}",
+            task_id,
+            len(rows),
+            base_count,
+        )
+
+        # If the user supplied filters but nothing matched, surface a sample of
+        # the values that actually exist for each filter key to make mismatches
+        # (types, spelling, casing) obvious.
+        if filters and not rows and base_count > 0:
+            for key in filters:
+                sample_cursor = await self.connection.execute(
+                    f"""
+                    SELECT DISTINCT json_extract(result_json, '$.{key}') AS v,
+                           typeof(json_extract(result_json, '$.{key}')) AS t
+                    FROM classification_results
+                    WHERE task_id = ? AND status = 'success'
+                    LIMIT 10
+                    """,
+                    (task_id,),
+                )
+                sample_rows = await sample_cursor.fetchall()
+                observed = [(row["v"], row["t"]) for row in sample_rows]
+                logger.warning(
+                    "get_results: no matches for filter '{}={}'. "
+                    "Observed values (value, sqlite_type) in column: {}",
+                    key,
+                    filters[key],
+                    observed,
+                )
+
         return [dict(row) for row in rows]
 
     async def get_result_summary(self, task_id: str) -> dict[str, int]:

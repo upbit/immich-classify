@@ -135,6 +135,43 @@ async def test_get_results_with_filter(db: Database) -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_results_filter_numeric_value(db: Database) -> None:
+    """CLI passes filter values as strings; numeric JSON fields must still match.
+
+    Regression test for the "no data" bug when filtering on integer fields like
+    ``foreground_count=0`` — ``json_extract`` returns an INTEGER, so a bare
+    string comparison never matches.
+    """
+    await db.create_task("task-1", ["a"], {}, 3)
+    await db.insert_pending_results("task-1", ["img-1", "img-2", "img-3"])
+
+    await db.save_result("task-1", "img-1", {"foreground_count": 0}, "{}")
+    await db.save_result("task-1", "img-2", {"foreground_count": 0}, "{}")
+    await db.save_result("task-1", "img-3", {"foreground_count": 2}, "{}")
+
+    # CLI delivers strings — get_results must coerce "0" → 0.
+    zero = await db.get_results("task-1", filters={"foreground_count": "0"})
+    assert len(zero) == 2
+
+    two = await db.get_results("task-1", filters={"foreground_count": "2"})
+    assert len(two) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_results_filter_boolean_value(db: Database) -> None:
+    """Boolean JSON fields should match ``true``/``false`` filter strings."""
+    await db.create_task("task-1", ["a"], {}, 2)
+    await db.insert_pending_results("task-1", ["img-1", "img-2"])
+
+    await db.save_result("task-1", "img-1", {"background_ignored": True}, "{}")
+    await db.save_result("task-1", "img-2", {"background_ignored": False}, "{}")
+
+    positive = await db.get_results("task-1", filters={"background_ignored": "true"})
+    assert len(positive) == 1
+    assert positive[0]["asset_id"] == "img-1"
+
+
+@pytest.mark.asyncio
 async def test_get_result_summary(db: Database) -> None:
     await db.create_task("task-1", ["a"], {}, 3)
     await db.insert_pending_results("task-1", ["img-1", "img-2", "img-3"])

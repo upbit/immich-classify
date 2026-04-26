@@ -16,7 +16,7 @@ from loguru import logger
 from tabulate import tabulate
 
 from immich_classify.config import Config, load_config
-from immich_classify.database import Database
+from immich_classify.database import Database, FilterParseError, parse_filter_strings
 from immich_classify.engine import TaskEngine, debug_classify
 from immich_classify.immich_client import ImmichClient
 from immich_classify.prompt_base import BasePrompt
@@ -261,7 +261,7 @@ async def cmd_debug(
                 else:
                     result_str = f"ERROR: {r.get('error', 'unknown')}"
                 table_data.append([
-                    r["asset_id"][:12] + "...",
+                    r["asset_id"],
                     r["file_name"],
                     r["status"],
                     result_str,
@@ -398,7 +398,7 @@ async def cmd_status(config: Config, task_id: str | None) -> None:
 
             table_data = [
                 [
-                    t["task_id"][:12] + "...",
+                    t["task_id"],
                     t["status"],
                     f"{t['completed_count']}/{t['total_count']}",
                     t["failed_count"],
@@ -426,9 +426,35 @@ async def cmd_results(
     try:
         await database.connect()
 
+        summary = await database.get_result_summary(task_id)
+        logger.info(
+            "Task {} result summary: {} (filters={})",
+            task_id,
+            summary,
+            filters,
+        )
+
         results = await database.get_results(task_id, filters)
+        logger.info(
+            "Query matched {} row(s) out of {} successful result(s)",
+            len(results),
+            summary.get("success", 0),
+        )
         if not results:
-            logger.info("No results found")
+            if filters:
+                logger.info(
+                    "No results matched filters {}. Hints:\n"
+                    "  • Filter values are auto-parsed as JSON (e.g. 0 → int, "
+                    "true → bool). Check the 'Observed values' log entry "
+                    "above to confirm the actual field values and their types.\n"
+                    "  • Verify the filter key spelling matches the JSON schema "
+                    "produced by your prompt.\n"
+                    "  • Enable debug logging (LOGURU_LEVEL=DEBUG) to see the "
+                    "full SQL and parameters used for the query.",
+                    filters,
+                )
+            else:
+                logger.info("No results found")
             return
 
         if output_format == "json":
@@ -475,7 +501,7 @@ async def cmd_results(
                 all_keys = list(first.keys())
 
             for r in results:
-                row_data: list[str] = [r["asset_id"][:12] + "..."]
+                row_data: list[str] = [r["asset_id"]]
                 if r["result_json"]:
                     parsed_row: dict[str, Any] = json.loads(r["result_json"])
                     for key in all_keys:
@@ -557,18 +583,81 @@ async def cmd_cancel(config: Config, task_id: str) -> None:
         await database.close()
 
 
+async def cmd_app(
+    config: Config,
+    host: str,
+    port: int,
+    open_browser: bool,
+) -> None:
+    """Launch the interactive WebUI (FastAPI + uvicorn).
+
+    The server opens its own :class:`Database` and :class:`ImmichClient` via
+    the FastAPI lifespan hook in ``webapp.create_app``; this function just
+    builds the app and runs uvicorn. Ctrl+C is handled by uvicorn itself.
+
+    When ``open_browser`` is true, a background task waits for uvicorn to
+    report ``started`` and then opens the UI in the user's default browser.
+    """
+    import webbrowser
+
+    import uvicorn
+
+    from immich_classify.webapp import create_app
+
+    app = create_app(config)
+    server_config = uvicorn.Config(
+        app,
+        host=host,
+        port=port,
+        log_level="info",
+        access_log=True,
+    )
+    server = uvicorn.Server(server_config)
+
+    # 0.0.0.0 isn't a browser-reachable address — use localhost in the URL.
+    display_host = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
+    url = f"http://{display_host}:{port}"
+    logger.info("Starting WebUI at {}", url)
+
+    async def _open_when_ready() -> None:
+        # Poll the server's started flag instead of using a fixed sleep so we
+        # open the browser as soon as possible, but give up after 10s if the
+        # server somehow never reports ready (e.g. port bind failure).
+        for _ in range(100):
+            if server.started:
+                break
+            await asyncio.sleep(0.1)
+        else:
+            logger.warning("Server did not report ready within 10s; skipping browser open")
+            return
+        try:
+            opened = webbrowser.open(url, new=2)
+        except Exception as exc:  # noqa: BLE001 — webbrowser can raise OS-dependent errors
+            logger.warning("Could not open browser automatically: {}", exc)
+            return
+        if opened:
+            logger.info("Opened {} in your default browser", url)
+        else:
+            logger.info("Browser could not be opened automatically. Visit {} manually.", url)
+
+    if open_browser:
+        asyncio.create_task(_open_when_ready())
+
+    await server.serve()
+
+
 def _parse_filters(filter_args: list[str] | None) -> dict[str, str] | None:
-    """Parse filter arguments like 'key=value' into a dict."""
-    if not filter_args:
-        return None
-    filters: dict[str, str] = {}
-    for f in filter_args:
-        if "=" not in f:
-            logger.error("Invalid filter format: '{}'. Use key=value.", f)
-            sys.exit(1)
-        key, value = f.split("=", 1)
-        filters[key.strip()] = value.strip()
-    return filters
+    """Parse filter arguments like 'key=value' into a dict.
+
+    Thin CLI-side wrapper around :func:`parse_filter_strings` that converts
+    a raised ``FilterParseError`` into a logged message + ``sys.exit(1)`` so
+    the CLI keeps its existing exit-on-bad-input behavior.
+    """
+    try:
+        return parse_filter_strings(filter_args)
+    except FilterParseError as exc:
+        logger.error("{}", exc)
+        sys.exit(1)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -624,6 +713,23 @@ def build_parser() -> argparse.ArgumentParser:
     # cancel
     cancel_parser = subparsers.add_parser("cancel", help="Cancel a task")
     cancel_parser.add_argument("--task", required=True, help="Task ID to cancel")
+
+    # app (WebUI)
+    app_parser = subparsers.add_parser(
+        "app",
+        help="Launch interactive WebUI for filter & browse",
+    )
+    app_parser.add_argument(
+        "--port", type=int, default=8765, help="Port to bind (default: 8765)"
+    )
+    app_parser.add_argument(
+        "--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)"
+    )
+    app_parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Do not auto-open the WebUI in a browser on startup",
+    )
 
     return parser
 
@@ -692,6 +798,14 @@ def main() -> None:
 
     elif args.command == "cancel":
         asyncio.run(cmd_cancel(config, task_id=args.task))
+
+    elif args.command == "app":
+        asyncio.run(cmd_app(
+            config,
+            host=args.host,
+            port=args.port,
+            open_browser=not args.no_browser,
+        ))
 
 
 if __name__ == "__main__":

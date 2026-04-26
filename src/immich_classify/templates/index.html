@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>immich-classify WebUI</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>immich-classify</h1>
+    <div class="topbar__task">
+      <label for="task-select">Task</label>
+      <select id="task-select"><option value="">Loading…</option></select>
+      <span id="task-meta" class="meta"></span>
+    </div>
+  </header>
+
+  <section class="filters">
+    <h2>Filters</h2>
+    <form id="filter-form" autocomplete="off">
+      <div id="schema-fields" class="schema-fields"></div>
+
+      <fieldset class="raw-filters">
+        <legend>Raw filters (key=value)</legend>
+        <div id="raw-filter-rows"></div>
+        <button type="button" id="add-raw-filter" class="btn btn--small">+ Add row</button>
+      </fieldset>
+
+      <div class="filter-actions">
+        <button type="submit" class="btn btn--primary">Apply</button>
+        <button type="button" id="reset-filters" class="btn">Reset</button>
+        <span id="result-count" class="meta"></span>
+      </div>
+    </form>
+  </section>
+
+  <section class="grid-section">
+    <div id="grid" class="grid"></div>
+    <p id="empty-state" class="empty-state" hidden>No results for the current filters.</p>
+  </section>
+
+  <dialog id="detail-modal" class="modal">
+    <form method="dialog" class="modal__close-form">
+      <button class="modal__close" value="close" aria-label="Close">&times;</button>
+    </form>
+    <div class="modal__body">
+      <div class="modal__image-wrap">
+        <img id="modal-image" alt="">
+      </div>
+      <aside class="modal__meta">
+        <h3>Asset</h3>
+        <dl id="modal-fields"></dl>
+        <a id="modal-immich-link" class="btn btn--primary" target="_blank" rel="noopener">
+          Open in Immich &#x2197;
+        </a>
+      </aside>
+    </div>
+  </dialog>
+
+  <script>
+    window.__IMMICH_API_URL__ = {{ immich_api_url | tojson }};
+  </script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

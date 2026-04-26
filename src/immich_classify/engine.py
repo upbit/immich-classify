@@ -220,7 +220,7 @@ class TaskEngine:
                 "[{}/{}] asset_id: {} - {}",
                 counter.value,
                 total,
-                asset_id[:12],
+                asset_id,
                 summary,
             )
 
@@ -237,7 +237,7 @@ class TaskEngine:
                 "[{}/{}] asset_id: {} - FAILED: {}",
                 counter.value,
                 total,
-                asset_id[:12],
+                asset_id,
                 exc,
             )
 
@@ -253,7 +253,7 @@ class TaskEngine:
                 "[{}/{}] asset_id: {} - ERROR: {}",
                 counter.value,
                 total,
-                asset_id[:12],
+                asset_id,
                 exc,
             )
 
@@ -316,7 +316,7 @@ async def debug_classify(
                 "[{}/{}] {} ({}) - {}",
                 i,
                 sample_size,
-                asset.asset_id[:12],
+                asset.asset_id,
                 asset.original_file_name,
                 result,
             )
@@ -332,7 +332,7 @@ async def debug_classify(
                 "[{}/{}] {} ({}) - FAILED: {}",
                 i,
                 sample_size,
-                asset.asset_id[:12],
+                asset.asset_id,
                 asset.original_file_name,
                 exc,
             )
@@ -349,7 +349,7 @@ async def debug_classify(
                 "[{}/{}] {} ({}) - ERROR: {}",
                 i,
                 sample_size,
-                asset.asset_id[:12],
+                asset.asset_id,
                 asset.original_file_name,
                 exc,
             )

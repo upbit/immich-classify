@@ -110,6 +110,38 @@ class ImmichClient:
         )
         return assets
 
+    async def download_image_bytes(
+        self, asset_id: str, image_size: str = "thumbnail"
+    ) -> tuple[bytes, str]:
+        """Download an image and return the raw bytes with content type.
+
+        Args:
+            asset_id: The Immich asset ID.
+            image_size: Either "thumbnail" or "original".
+
+        Returns:
+            Tuple of (raw_bytes, content_type).
+
+        Raises:
+            httpx.HTTPStatusError: If the download fails.
+        """
+        if image_size == "thumbnail":
+            url = f"/api/assets/{asset_id}/thumbnail"
+        else:
+            url = f"/api/assets/{asset_id}/original"
+
+        response = await self._client.get(url)
+        response.raise_for_status()
+        content_type = response.headers.get("content-type", "image/jpeg")
+        logger.debug(
+            "Downloaded {} bytes for asset {} ({}, {})",
+            len(response.content),
+            asset_id,
+            image_size,
+            content_type,
+        )
+        return response.content, content_type
+
     async def download_image_base64(
         self, asset_id: str, image_size: str = "thumbnail"
     ) -> tuple[str, str]:
@@ -125,20 +157,6 @@ class ImmichClient:
         Raises:
             httpx.HTTPStatusError: If the download fails.
         """
-        if image_size == "thumbnail":
-            url = f"/api/assets/{asset_id}/thumbnail"
-        else:
-            url = f"/api/assets/{asset_id}/original"
-
-        response = await self._client.get(url)
-        response.raise_for_status()
-        encoded = base64.b64encode(response.content).decode("ascii")
-        content_type = response.headers.get("content-type", "image/jpeg")
-        logger.debug(
-            "Downloaded {} for asset {} ({} bytes, {} base64 chars)",
-            image_size,
-            asset_id,
-            len(response.content),
-            len(encoded),
-        )
+        raw_bytes, content_type = await self.download_image_bytes(asset_id, image_size)
+        encoded = base64.b64encode(raw_bytes).decode("ascii")
         return encoded, content_type
