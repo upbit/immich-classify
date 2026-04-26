@@ -25,6 +25,8 @@
   const modalImage = $("modal-image");
   const modalFieldsEl = $("modal-fields");
   const modalImmichLink = $("modal-immich-link");
+  const syncBtn = $("sync-status-btn");
+  const syncProgressEl = $("sync-progress");
 
   // Current loaded task schema: [{name, field_type, description, enum, default}].
   let currentSchema = [];
@@ -35,14 +37,9 @@
   init();
 
   async function init() {
-    try {
-      await loadTasks();
-    } catch (err) {
-      taskSelect.innerHTML = '<option value="">(failed to load tasks)</option>';
-      console.error(err);
-      return;
-    }
-
+    // Bind all event listeners BEFORE any async work so they are always
+    // attached even if loadTasks() fails or the browser serves a cached page.
+    console.log("[init] Binding event listeners");
     taskSelect.addEventListener("change", onTaskChanged);
     addRawBtn.addEventListener("click", () => addRawFilterRow());
     filterForm.addEventListener("submit", (ev) => {
@@ -53,6 +50,21 @@
       resetFilterForm();
       loadResults();
     });
+
+    if (syncBtn) {
+      console.log("[init] syncBtn found, binding click handler");
+      syncBtn.addEventListener("click", onSyncStatus);
+    } else {
+      console.error("[init] syncBtn (#sync-status-btn) NOT FOUND in DOM!");
+    }
+
+    try {
+      await loadTasks();
+    } catch (err) {
+      taskSelect.innerHTML = '<option value="">(failed to load tasks)</option>';
+      console.error(err);
+      return;
+    }
 
     // Auto-load for the first task.
     if (taskSelect.value) {
@@ -260,9 +272,11 @@
 
     const results = data.results || [];
     resultsByAsset.clear();
-    for (const r of results) resultsByAsset.set(r.asset_id, r.fields || {});
+    for (const r of results) resultsByAsset.set(r.asset_id, { fields: r.fields || {}, is_archived: r.is_archived, is_trashed: r.is_trashed });
 
-    resultCountEl.textContent = `Matched ${results.length} / ${data.success_total || 0}`;
+    resultCountEl.textContent = `Matched ${results.length} / ${data.success_total || 0}`
+      + (data.archived_total ? ` · ${data.archived_total} archived` : "")
+      + (data.trashed_total ? ` · ${data.trashed_total} trashed (hidden)` : "");
 
     if (results.length === 0) {
       gridEl.innerHTML = "";
@@ -275,6 +289,7 @@
     for (const r of results) {
       const card = document.createElement("div");
       card.className = "grid-card";
+      if (r.is_archived) card.classList.add("is-archived");
       card.dataset.assetId = r.asset_id;
       card.title = r.asset_id;
       const img = document.createElement("img");
@@ -309,7 +324,8 @@
 
   // ── Modal ───────────────────────────────────────────────────────
   function openModal(assetId) {
-    const fields = resultsByAsset.get(assetId) || {};
+    const data = resultsByAsset.get(assetId) || {};
+    const fields = data.fields || {};
 
     // Reset modal image loading state.
     modalImage.classList.add("is-loading");
@@ -335,6 +351,7 @@
     modalFieldsEl.innerHTML = "";
     // Always show asset_id first.
     appendDt(modalFieldsEl, "asset_id", assetId);
+    if (data.is_archived) appendDt(modalFieldsEl, "status", "📦 Archived");
     for (const [k, v] of Object.entries(fields)) {
       appendDt(modalFieldsEl, k, v);
     }
@@ -369,6 +386,73 @@
       dd.textContent = value == null ? "" : String(value);
     }
     dl.appendChild(dd);
+  }
+
+  // ── Sync status ─────────────────────────────────────────────────
+  async function onSyncStatus() {
+    const taskId = taskSelect.value;
+    if (!taskId) {
+      console.warn("[sync] No task selected");
+      return;
+    }
+    console.log("[sync] Starting sync for task:", taskId);
+    syncBtn.classList.add("is-syncing");
+    syncBtn.disabled = true;
+    syncProgressEl.textContent = "Starting sync…";
+
+    try {
+      const url = `/api/tasks/${encodeURIComponent(taskId)}/sync-status`;
+      console.log("[sync] POST", url);
+      const resp = await fetch(url, { method: "POST" });
+      const body = await resp.json();
+      console.log("[sync] POST response:", resp.status, body);
+      if (!resp.ok) {
+        syncProgressEl.textContent = `Sync failed (${resp.status}): ${body.detail || ""}`;
+        syncBtn.classList.remove("is-syncing");
+        syncBtn.disabled = false;
+        return;
+      }
+      // Poll progress
+      pollSyncProgress(taskId);
+    } catch (err) {
+      console.error("[sync] Error:", err);
+      syncProgressEl.textContent = `Sync error: ${err.message}`;
+      syncBtn.classList.remove("is-syncing");
+      syncBtn.disabled = false;
+    }
+  }
+
+  async function pollSyncProgress(taskId) {
+    const poll = async () => {
+      try {
+        const resp = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/sync-status`);
+        if (!resp.ok) {
+          console.warn("[sync] Poll failed:", resp.status);
+          return;
+        }
+        const data = await resp.json();
+        console.log("[sync] Poll:", data);
+        syncProgressEl.textContent = `Syncing ${data.completed || 0}/${data.total || 0}` +
+          (data.updated ? ` (${data.updated} changed)` : "") +
+          (data.errors ? ` · ${data.errors} errors` : "");
+        if (data.running) {
+          setTimeout(poll, 500);
+        } else {
+          syncProgressEl.textContent = `Sync done: ${data.updated || 0} changed` +
+            (data.errors ? `, ${data.errors} errors` : "");
+          syncBtn.classList.remove("is-syncing");
+          syncBtn.disabled = false;
+          console.log("[sync] Done, reloading results");
+          // Reload results to reflect updated flags
+          await loadResults();
+        }
+      } catch (err) {
+        console.error("[sync] Poll error:", err);
+        syncBtn.classList.remove("is-syncing");
+        syncBtn.disabled = false;
+      }
+    };
+    setTimeout(poll, 300);
   }
 
   // ── Helpers ─────────────────────────────────────────────────────

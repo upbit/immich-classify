@@ -38,6 +38,12 @@ CREATE INDEX IF NOT EXISTS idx_results_task ON classification_results(task_id);
 CREATE INDEX IF NOT EXISTS idx_results_status ON classification_results(status);
 """
 
+# Incremental migrations for columns added after the initial schema.
+_MIGRATIONS = [
+    "ALTER TABLE classification_results ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE classification_results ADD COLUMN is_trashed INTEGER NOT NULL DEFAULT 0",
+]
+
 
 def _now_iso() -> str:
     """Return current UTC time in ISO 8601 format."""
@@ -112,7 +118,17 @@ class Database:
         self._connection.row_factory = aiosqlite.Row
         await self._connection.executescript(SCHEMA_SQL)
         await self._connection.commit()
+        await self._run_migrations()
         logger.debug("Database initialized at {}", self._database_path)
+
+    async def _run_migrations(self) -> None:
+        """Apply incremental schema migrations (idempotent)."""
+        for sql in _MIGRATIONS:
+            try:
+                await self.connection.execute(sql)
+                await self.connection.commit()
+            except Exception:  # noqa: BLE001 — column already exists
+                pass
 
     async def close(self) -> None:
         """Close the database connection."""
@@ -222,20 +238,37 @@ class Database:
 
     # ── Result operations ────────────────────────────────────────────
 
-    async def insert_pending_results(self, task_id: str, asset_ids: list[str]) -> None:
+    async def insert_pending_results(
+        self,
+        task_id: str,
+        asset_ids: list[str],
+        asset_flags: dict[str, tuple[bool, bool]] | None = None,
+    ) -> None:
         """Batch-insert pending result placeholders for a task.
 
         Args:
             task_id: The task these assets belong to.
             asset_ids: List of Immich asset IDs to insert.
+            asset_flags: Optional mapping of asset_id → (is_archived, is_trashed).
         """
         now = _now_iso()
+        flags = asset_flags or {}
         await self.connection.executemany(
             """
-            INSERT OR IGNORE INTO classification_results (task_id, asset_id, status, created_at)
-            VALUES (?, ?, 'pending', ?)
+            INSERT OR IGNORE INTO classification_results
+                (task_id, asset_id, status, is_archived, is_trashed, created_at)
+            VALUES (?, ?, 'pending', ?, ?, ?)
             """,
-            [(task_id, asset_id, now) for asset_id in asset_ids],
+            [
+                (
+                    task_id,
+                    asset_id,
+                    int(flags.get(asset_id, (False, False))[0]),
+                    int(flags.get(asset_id, (False, False))[1]),
+                    now,
+                )
+                for asset_id in asset_ids
+            ],
         )
         await self.connection.commit()
 
@@ -341,7 +374,7 @@ class Database:
             filters,
         )
 
-        query = "SELECT * FROM classification_results WHERE task_id = ? AND status = 'success'"
+        query = "SELECT * FROM classification_results WHERE task_id = ? AND status = 'success' AND is_trashed = 0"
         params: list[Any] = [task_id]
 
         if filters:
@@ -414,3 +447,127 @@ class Database:
         )
         rows = await cursor.fetchall()
         return {row["status"]: row["count"] for row in rows}
+
+    # ── Immich status sync ───────────────────────────────────────────
+
+    async def get_asset_ids_for_task(self, task_id: str) -> list[str]:
+        """Return all asset IDs belonging to a task.
+
+        Args:
+            task_id: The task to query.
+
+        Returns:
+            List of asset IDs.
+        """
+        cursor = await self.connection.execute(
+            "SELECT asset_id FROM classification_results WHERE task_id = ?",
+            (task_id,),
+        )
+        rows = await cursor.fetchall()
+        return [row["asset_id"] for row in rows]
+
+    async def update_asset_flags(
+        self,
+        task_id: str,
+        asset_id: str,
+        is_archived: bool,
+        is_trashed: bool,
+    ) -> None:
+        """Update the archived/trashed flags for a single asset.
+
+        Args:
+            task_id: The owning task.
+            asset_id: The Immich asset ID.
+            is_archived: Current archived state.
+            is_trashed: Current trashed state.
+        """
+        await self.connection.execute(
+            """
+            UPDATE classification_results
+            SET is_archived = ?, is_trashed = ?
+            WHERE task_id = ? AND asset_id = ?
+            """,
+            (int(is_archived), int(is_trashed), task_id, asset_id),
+        )
+        await self.connection.commit()
+
+    async def get_all_asset_flags(
+        self, task_id: str
+    ) -> dict[str, tuple[bool, bool]]:
+        """Return current (is_archived, is_trashed) for every asset in a task.
+
+        Args:
+            task_id: The task to query.
+
+        Returns:
+            Dict mapping asset_id → (is_archived, is_trashed).
+        """
+        cursor = await self.connection.execute(
+            "SELECT asset_id, is_archived, is_trashed FROM classification_results WHERE task_id = ?",
+            (task_id,),
+        )
+        rows = await cursor.fetchall()
+        return {
+            row["asset_id"]: (bool(row["is_archived"]), bool(row["is_trashed"]))
+            for row in rows
+        }
+
+    async def batch_update_asset_flags(
+        self,
+        task_id: str,
+        flags: list[tuple[str, bool, bool]],
+    ) -> None:
+        """Batch-update archived/trashed flags for multiple assets in one commit.
+
+        Args:
+            task_id: The owning task.
+            flags: List of (asset_id, is_archived, is_trashed) tuples.
+        """
+        if not flags:
+            return
+        await self.connection.executemany(
+            """
+            UPDATE classification_results
+            SET is_archived = ?, is_trashed = ?
+            WHERE task_id = ? AND asset_id = ?
+            """,
+            [
+                (int(is_archived), int(is_trashed), task_id, asset_id)
+                for asset_id, is_archived, is_trashed in flags
+            ],
+        )
+        await self.connection.commit()
+        logger.info(
+            "[db] batch_update_asset_flags: task={} updated {} rows",
+            task_id,
+            len(flags),
+        )
+
+    async def get_asset_flag_summary(
+        self, task_id: str
+    ) -> dict[str, int]:
+        """Return counts of archived and trashed assets for a task.
+
+        Args:
+            task_id: The task to query.
+
+        Returns:
+            Dict with keys 'archived' and 'trashed'.
+        """
+        cursor = await self.connection.execute(
+            """
+            SELECT
+                SUM(is_archived) AS archived,
+                SUM(is_trashed)  AS trashed
+            FROM classification_results
+            WHERE task_id = ?
+            """,
+            (task_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return {"archived": 0, "trashed": 0}
+        return {
+            "archived": int(row["archived"] or 0),
+            "trashed": int(row["trashed"] or 0),
+        }

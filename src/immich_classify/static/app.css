@@ -218,6 +218,32 @@ h3 { font-size: 1rem; }
 }
 .grid-card__error.is-visible { display: flex; }
 
+/* Archived asset: grey tint overlay + muted border */
+.grid-card.is-archived {
+  border-color: #9ca3af;
+  opacity: 0.6;
+}
+.grid-card.is-archived::after {
+  content: "📦";
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  font-size: 0.85rem;
+  background: rgba(255, 255, 255, 0.85);
+  border-radius: 4px;
+  padding: 1px 4px;
+  line-height: 1;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Sync button states */
+.btn.is-syncing {
+  opacity: 0.7;
+  cursor: wait;
+}
+.sync-progress { font-size: 0.8rem; }
+
 .empty-state {
   color: var(--muted);
   text-align: center;

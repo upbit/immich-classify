@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>immich-classify WebUI</title>
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/app.css?v=3">
 </head>
 <body>
   <header class="topbar">
@@ -31,6 +31,8 @@
         <button type="submit" class="btn btn--primary">Apply</button>
         <button type="button" id="reset-filters" class="btn">Reset</button>
         <span id="result-count" class="meta"></span>
+        <button type="button" id="sync-status-btn" class="btn" title="Sync archived/trashed status from Immich">⟳ Sync Status</button>
+        <span id="sync-progress" class="meta"></span>
       </div>
     </form>
   </section>
@@ -61,6 +63,6 @@
   <script>
     window.__IMMICH_API_URL__ = {{ immich_api_url | tojson }};
   </script>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=3"></script>
 </body>
 </html>

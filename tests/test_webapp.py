@@ -213,6 +213,12 @@ async def test_api_results_no_filters_returns_all(
     data = resp.json()
     assert data["total"] == 3
     assert data["success_total"] == 3
+    assert "archived_total" in data
+    assert "trashed_total" in data
+    # Each result should carry is_archived / is_trashed flags
+    for r in data["results"]:
+        assert "is_archived" in r
+        assert "is_trashed" in r
 
 
 @pytest.mark.asyncio
@@ -273,3 +279,56 @@ def test_index_page_renders(tmp_path: Path) -> None:
         assert "immich-classify" in resp.text
         # Ensure the Immich API URL landed in the template.
         assert json.dumps(config.immich_api_url) in resp.text
+
+
+@pytest.mark.asyncio
+async def test_api_results_excludes_trashed(tmp_path: Path) -> None:
+    """Trashed assets should be excluded from results by default."""
+    db_path = str(tmp_path / "trash.db")
+    db = Database(db_path)
+    await db.connect()
+    task_id = "task-trash-test"
+    await _seed_task(
+        db,
+        task_id,
+        schema_fields={"cat": {"field_type": "string", "description": "category"}},
+    )
+    flags = {
+        "asset-ok": (False, False),
+        "asset-trashed": (False, True),
+        "asset-archived": (True, False),
+    }
+    await db.insert_pending_results(task_id, list(flags.keys()), asset_flags=flags)
+    await db.save_result(task_id, "asset-ok", {"cat": "a"}, "{}")
+    await db.save_result(task_id, "asset-trashed", {"cat": "b"}, "{}")
+    await db.save_result(task_id, "asset-archived", {"cat": "c"}, "{}")
+    await db.close()
+
+    config = _make_config(db_path)
+    app = create_app(config)
+    transport = _immich_mock_transport({})
+    with TestClient(app) as client:
+        real_immich = app.state.immich
+        await real_immich.close()
+        mocked = ImmichClient.__new__(ImmichClient)
+        mocked._api_url = config.immich_api_url
+        mocked._api_key = config.immich_api_key
+        mocked._client = httpx.AsyncClient(
+            base_url=config.immich_api_url,
+            headers={"x-api-key": config.immich_api_key},
+            transport=transport,
+        )
+        app.state.immich = mocked
+
+        resp = client.get(f"/api/tasks/{task_id}/results")
+        assert resp.status_code == 200
+        data = resp.json()
+        # asset-trashed should be excluded
+        assert data["total"] == 2
+        ids = {r["asset_id"] for r in data["results"]}
+        assert ids == {"asset-ok", "asset-archived"}
+        assert data["trashed_total"] == 1
+        assert data["archived_total"] == 1
+        # archived asset should have is_archived=True
+        archived = next(r for r in data["results"] if r["asset_id"] == "asset-archived")
+        assert archived["is_archived"] is True

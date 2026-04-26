@@ -21,6 +21,7 @@ Architecture:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -192,7 +193,11 @@ def create_app(config: Config) -> FastAPI:
 
         results: list[dict[str, Any]] = []
         for r in rows:
-            entry: dict[str, Any] = {"asset_id": r["asset_id"]}
+            entry: dict[str, Any] = {
+                "asset_id": r["asset_id"],
+                "is_archived": bool(r.get("is_archived", 0)),
+                "is_trashed": bool(r.get("is_trashed", 0)),
+            }
             raw_json = r.get("result_json")
             if raw_json:
                 try:
@@ -205,12 +210,15 @@ def create_app(config: Config) -> FastAPI:
             results.append(entry)
 
         summary = await db.get_result_summary(task_id)
+        flag_summary = await db.get_asset_flag_summary(task_id)
 
         return JSONResponse({
             "task_id": task_id,
             "filters": filters or {},
             "total": len(results),
             "success_total": summary.get("success", 0),
+            "archived_total": flag_summary.get("archived", 0),
+            "trashed_total": flag_summary.get("trashed", 0),
             "results": results,
         })
 
@@ -243,5 +251,140 @@ def create_app(config: Config) -> FastAPI:
             "asset_id": asset_id,
             "url": f"{cfg.immich_api_url}/photos/{asset_id}",
         })
+
+    # ── Sync status ─────────────────────────────────────────────
+    # In-memory tracking for running sync jobs: task_id → progress dict.
+    _sync_jobs: dict[str, dict[str, Any]] = {}
+
+    @app.post("/api/tasks/{task_id}/sync-status")
+    async def api_sync_status(task_id: str, request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        """Start an async background job to refresh is_archived/is_trashed from Immich."""
+        logger.info("[sync] POST sync-status called for task_id={}", task_id)
+        db = cast(Database, request.app.state.db)
+        task = await db.get_task(task_id)
+        if task is None:
+            logger.warning("[sync] Task {} not found", task_id)
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+        if task_id in _sync_jobs and _sync_jobs[task_id].get("running"):
+            logger.info("[sync] Task {} already has a running sync job", task_id)
+            return JSONResponse({"status": "already_running", **_sync_jobs[task_id]})
+
+        asset_ids = await db.get_asset_ids_for_task(task_id)
+        logger.info(
+            "[sync] Task {} has {} assets to sync. First 5 IDs: {}",
+            task_id,
+            len(asset_ids),
+            asset_ids[:5],
+        )
+        progress: dict[str, Any] = {
+            "running": True,
+            "total": len(asset_ids),
+            "completed": 0,
+            "updated": 0,
+            "errors": 0,
+        }
+        _sync_jobs[task_id] = progress
+
+        async def _do_sync() -> None:
+            logger.info("[sync] Background sync started for task {}", task_id)
+            immich = cast(ImmichClient, request.app.state.immich)
+            db_inner = cast(Database, request.app.state.db)
+            sem = asyncio.Semaphore(5)  # limit concurrent Immich API calls
+
+            # Read current DB flags so we can detect actual changes.
+            old_flags = await db_inner.get_all_asset_flags(task_id)
+
+            # Collect results from Immich first, then batch-write to DB.
+            fetched: list[tuple[str, bool, bool]] = []  # (aid, archived, trashed)
+            fetch_lock = asyncio.Lock()
+
+            async def _fetch_one(aid: str) -> None:
+                try:
+                    async with sem:
+                        info = await immich.get_asset_info(aid)
+                    logger.debug(
+                        "[sync] asset={} is_archived={} is_trashed={}",
+                        aid,
+                        info["is_archived"],
+                        info["is_trashed"],
+                    )
+                    async with fetch_lock:
+                        fetched.append((aid, info["is_archived"], info["is_trashed"]))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[sync] Failed for asset {}: {}", aid, exc)
+                    progress["errors"] += 1
+                finally:
+                    progress["completed"] += 1
+
+            tasks = [asyncio.create_task(_fetch_one(aid)) for aid in asset_ids]
+            await asyncio.gather(*tasks)
+
+            # Batch-write all flags to DB and count real changes.
+            changed = 0
+            for aid, is_archived, is_trashed in fetched:
+                old = old_flags.get(aid, (False, False))
+                if (is_archived, is_trashed) != old:
+                    changed += 1
+                    logger.info(
+                        "[sync] asset={} changed: archived {} → {}, trashed {} → {}",
+                        aid, old[0], is_archived, old[1], is_trashed,
+                    )
+            await db_inner.batch_update_asset_flags(task_id, fetched)
+            progress["updated"] = changed
+
+            progress["running"] = False
+            logger.info(
+                "[sync] Completed for task {}: {}/{} actually changed, {} errors",
+                task_id,
+                changed,
+                progress["total"],
+                progress["errors"],
+            )
+
+        asyncio.create_task(_do_sync())
+        return JSONResponse({"status": "started", **progress})
+
+    @app.get("/api/tasks/{task_id}/sync-status")
+    async def api_sync_progress(task_id: str, request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        """Poll the progress of a running sync job."""
+        if task_id not in _sync_jobs:
+            return JSONResponse({"status": "idle", "running": False})
+        return JSONResponse({"status": "ok", **_sync_jobs[task_id]})
+
+    @app.get("/api/debug/asset/{asset_id}")
+    async def api_debug_asset(asset_id: str, request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        """Debug endpoint: fetch raw asset info from Immich for a single asset."""
+        immich = cast(ImmichClient, request.app.state.immich)
+        logger.info("[debug] Probing asset {} from Immich", asset_id)
+        try:
+            raw_response = await immich._client.get(f"/api/assets/{asset_id}")
+            raw_response.raise_for_status()
+            raw_data: dict[str, Any] = raw_response.json()
+            # Return a subset of useful fields for debugging
+            return JSONResponse({
+                "asset_id": asset_id,
+                "id": raw_data.get("id"),
+                "isArchived": raw_data.get("isArchived"),
+                "isTrashed": raw_data.get("isTrashed"),
+                "type": raw_data.get("type"),
+                "originalFileName": raw_data.get("originalFileName"),
+                "status": "ok",
+            })
+        except httpx.HTTPStatusError as exc:
+            logger.warning("[debug] Asset {} fetch failed: HTTP {}", asset_id, exc.response.status_code)
+            return JSONResponse({
+                "asset_id": asset_id,
+                "status": "error",
+                "http_status": exc.response.status_code,
+                "detail": exc.response.text[:500],
+            }, status_code=exc.response.status_code)
+        except httpx.HTTPError as exc:
+            logger.warning("[debug] Asset {} fetch errored: {}", asset_id, exc)
+            return JSONResponse({
+                "asset_id": asset_id,
+                "status": "error",
+                "detail": str(exc),
+            }, status_code=502)
 
     return app

@@ -26,6 +26,8 @@ class Asset:
     asset_id: str
     original_file_name: str
     asset_type: str  # "IMAGE" or "VIDEO"
+    is_archived: bool = False
+    is_trashed: bool = False
 
 
 class ImmichClient:
@@ -101,6 +103,8 @@ class ImmichClient:
                     asset_id=str(item["id"]),
                     original_file_name=str(item.get("originalFileName", "")),
                     asset_type=asset_type,
+                    is_archived=bool(item.get("isArchived", False)),
+                    is_trashed=bool(item.get("isTrashed", False)),
                 ))
         logger.debug(
             "Album {} has {} image assets (out of {} total)",
@@ -160,3 +164,36 @@ class ImmichClient:
         raw_bytes, content_type = await self.download_image_bytes(asset_id, image_size)
         encoded = base64.b64encode(raw_bytes).decode("ascii")
         return encoded, content_type
+
+    async def get_asset_info(self, asset_id: str) -> dict[str, Any]:
+        """Fetch current asset info from Immich.
+
+        Args:
+            asset_id: The Immich asset ID.
+
+        Returns:
+            Dict with is_archived and is_trashed status.
+
+        Raises:
+            httpx.HTTPStatusError: If the API returns an error status.
+        """
+        url = f"/api/assets/{asset_id}"
+        logger.debug("[get_asset_info] GET {} for asset_id={}", url, asset_id)
+        response = await self._client.get(url)
+        response.raise_for_status()
+        data: dict[str, Any] = response.json()
+        is_archived = bool(data.get("isArchived", False))
+        is_trashed = bool(data.get("isTrashed", False))
+        logger.info(
+            "[get_asset_info] asset_id={} isArchived={} isTrashed={} (raw: isArchived={!r}, isTrashed={!r})",
+            asset_id,
+            is_archived,
+            is_trashed,
+            data.get("isArchived"),
+            data.get("isTrashed"),
+        )
+        return {
+            "asset_id": asset_id,
+            "is_archived": is_archived,
+            "is_trashed": is_trashed,
+        }

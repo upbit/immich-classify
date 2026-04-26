@@ -194,3 +194,94 @@ async def test_insert_pending_ignores_duplicates(db: Database) -> None:
 
     pending = await db.get_pending_asset_ids("task-1")
     assert len(pending) == 3
+
+
+@pytest.mark.asyncio
+async def test_insert_pending_with_flags(db: Database) -> None:
+    """Asset flags (is_archived, is_trashed) are stored on insert."""
+    await db.create_task("task-1", ["a"], {}, 3)
+    flags = {
+        "img-1": (True, False),   # archived
+        "img-2": (False, True),   # trashed
+        "img-3": (False, False),  # normal
+    }
+    await db.insert_pending_results("task-1", ["img-1", "img-2", "img-3"], asset_flags=flags)
+
+    summary = await db.get_asset_flag_summary("task-1")
+    assert summary["archived"] == 1
+    assert summary["trashed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_results_filters_trashed(db: Database) -> None:
+    """get_results should exclude trashed assets by default."""
+    await db.create_task("task-1", ["a"], {}, 3)
+    flags = {
+        "img-1": (False, False),
+        "img-2": (False, True),   # trashed
+        "img-3": (True, False),   # archived (still visible)
+    }
+    await db.insert_pending_results("task-1", ["img-1", "img-2", "img-3"], asset_flags=flags)
+    await db.save_result("task-1", "img-1", {"cat": "a"}, "{}")
+    await db.save_result("task-1", "img-2", {"cat": "b"}, "{}")
+    await db.save_result("task-1", "img-3", {"cat": "c"}, "{}")
+
+    results = await db.get_results("task-1")
+    # img-2 is trashed → filtered out
+    assert len(results) == 2
+    ids = {r["asset_id"] for r in results}
+    assert ids == {"img-1", "img-3"}
+
+
+@pytest.mark.asyncio
+async def test_update_asset_flags(db: Database) -> None:
+    """update_asset_flags changes the stored flags."""
+    await db.create_task("task-1", ["a"], {}, 1)
+    await db.insert_pending_results("task-1", ["img-1"])
+
+    await db.update_asset_flags("task-1", "img-1", is_archived=True, is_trashed=False)
+    summary = await db.get_asset_flag_summary("task-1")
+    assert summary["archived"] == 1
+    assert summary["trashed"] == 0
+
+    await db.update_asset_flags("task-1", "img-1", is_archived=False, is_trashed=True)
+    summary = await db.get_asset_flag_summary("task-1")
+    assert summary["archived"] == 0
+    assert summary["trashed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_asset_ids_for_task(db: Database) -> None:
+    await db.create_task("task-1", ["a"], {}, 2)
+    await db.insert_pending_results("task-1", ["img-1", "img-2"])
+
+    ids = await db.get_asset_ids_for_task("task-1")
+    assert set(ids) == {"img-1", "img-2"}
+
+
+@pytest.mark.asyncio
+async def test_get_all_asset_flags(db: Database) -> None:
+    await db.create_task("task-1", ["a"], {}, 2)
+    flags = {"img-1": (True, False), "img-2": (False, True)}
+    await db.insert_pending_results("task-1", ["img-1", "img-2"], asset_flags=flags)
+
+    result = await db.get_all_asset_flags("task-1")
+    assert result["img-1"] == (True, False)
+    assert result["img-2"] == (False, True)
+
+
+@pytest.mark.asyncio
+async def test_batch_update_asset_flags(db: Database) -> None:
+    await db.create_task("task-1", ["a"], {}, 3)
+    await db.insert_pending_results("task-1", ["img-1", "img-2", "img-3"])
+
+    # All start as (False, False); batch-update two of them.
+    await db.batch_update_asset_flags("task-1", [
+        ("img-1", True, False),
+        ("img-2", False, True),
+    ])
+
+    result = await db.get_all_asset_flags("task-1")
+    assert result["img-1"] == (True, False)
+    assert result["img-2"] == (False, True)
+    assert result["img-3"] == (False, False)

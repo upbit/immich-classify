@@ -77,9 +77,13 @@ class TaskEngine:
             total_count=len(all_assets),
         )
 
-        # Insert pending results for all assets
+        # Insert pending results for all assets (with archived/trashed flags)
         asset_ids = [asset.asset_id for asset in all_assets]
-        await self._database.insert_pending_results(task_id, asset_ids)
+        asset_flags = {
+            asset.asset_id: (asset.is_archived, asset.is_trashed)
+            for asset in all_assets
+        }
+        await self._database.insert_pending_results(task_id, asset_ids, asset_flags)
 
         # Run the task
         await self._run_task(task_id, prompt_config, effective_concurrency)
