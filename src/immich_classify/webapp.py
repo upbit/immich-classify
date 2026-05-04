@@ -412,7 +412,7 @@ def create_app(config: Config) -> FastAPI:
             return JSONResponse({
                 "asset_id": asset_id,
                 "status": "error",
-                "detail": str(exc),
+                "detail": "Failed to contact upstream service.",
             }, status_code=502)
 
     return app
