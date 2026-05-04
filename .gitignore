@@ -28,6 +28,7 @@ htmlcov/
 
 # Project specific
 *.db
+*.db-journal
 .env
 .DS_Store
 
