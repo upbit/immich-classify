@@ -251,3 +251,72 @@ class TestCmdStatus:
         assert "Failed:     1" in out
         assert "Completed:  1" in out
         assert "Pending:    1" in out
+
+    @pytest.mark.asyncio
+    async def test_status_list_hides_cancelled_tasks(
+        self, tmp_path: object, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Cancelled tasks are noise in the summary listing — a user who
+        cancelled a run has already decided to drop it, and leaving it in
+        the table just makes it harder to find active tasks. They remain
+        queryable via ``--task <id>`` and via the database.
+        """
+        db_path = str(tmp_path) + "/classify.db"  # type: ignore[attr-defined]
+        db = Database(db_path)
+        await db.connect()
+        await db.create_task("t-active", ["album-alive"], {"name": "p1"}, 2)
+        await db.insert_pending_results("t-active", ["a1", "a2"])
+        await db.save_result("t-active", "a1", {"x": 1}, "{}")
+        await db.update_task_status("t-active", "paused")
+
+        await db.create_task("t-dead", ["album-dead"], {"name": "p2"}, 2)
+        await db.insert_pending_results("t-dead", ["b1", "b2"])
+        await db.update_task_status("t-dead", "cancelled")
+        await db.close()
+
+        await cmd_status(_make_config(db_path), task_id=None)
+        out = capsys.readouterr().out
+
+        assert "t-active" in out
+        assert "t-dead" not in out  # cancelled must be hidden
+
+    @pytest.mark.asyncio
+    async def test_status_list_shows_prompt_and_album_columns(
+        self, tmp_path: object, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Two tasks sharing an album but using different prompts must be
+        distinguishable from the listing alone. Add ``Prompt`` + ``Albums``
+        columns so the user can tell them apart without looking up task IDs.
+        """
+        db_path = str(tmp_path) + "/classify.db"  # type: ignore[attr-defined]
+        db = Database(db_path)
+        await db.connect()
+        # Same album, different prompts — the pre-fix output made these
+        # indistinguishable in the summary table.
+        album_id = "abcdef1234567890"
+        await db.create_task(
+            "t-one", [album_id], {"name": "classification"}, 1
+        )
+        await db.insert_pending_results("t-one", ["a1"])
+        await db.save_result("t-one", "a1", {"x": 1}, "{}")
+
+        await db.create_task(
+            "t-two", [album_id], {"name": "foreground_people"}, 1
+        )
+        await db.insert_pending_results("t-two", ["a1"])
+        await db.save_result("t-two", "a1", {"x": 1}, "{}")
+        await db.close()
+
+        await cmd_status(_make_config(db_path), task_id=None)
+        out = capsys.readouterr().out
+
+        # Column headers must exist.
+        assert "Prompt" in out
+        assert "Albums" in out
+        # Prompt types distinguish the two rows.
+        assert "classification" in out
+        assert "foreground_people" in out
+        # Album abbreviation — first 8 chars of the id.
+        assert "abcdef12" in out
+        # Full album id must NOT be dumped (that's what "abbreviated" means).
+        assert album_id not in out

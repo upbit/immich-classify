@@ -159,6 +159,45 @@ async def test_api_tasks_lists_seeded_task(
     assert resp.status_code == 200
     data = resp.json()
     assert any(t["task_id"] == task_id for t in data["tasks"])
+    # Each task entry should carry prompt_name + album_abbrev so the
+    # frontend dropdown can disambiguate same-album, different-prompt runs.
+    seeded = next(t for t in data["tasks"] if t["task_id"] == task_id)
+    assert seeded["prompt_name"] == "test_prompt"
+    assert seeded["album_abbrev"] == "album-1"  # first 8 chars of "album-1"
+    assert seeded["album_ids"] == ["album-1"]
+
+
+@pytest.mark.asyncio
+async def test_api_tasks_hides_cancelled(tmp_path: Path) -> None:
+    """Cancelled tasks are noise in the UI dropdown — they've been
+    intentionally dropped by the user and their results are preserved but
+    uninteresting. The WebUI should quietly filter them out so the
+    remaining task list stays focused on active / paused / completed work.
+    """
+    db_path = str(tmp_path / "hide_cancelled.db")
+    db = Database(db_path)
+    await db.connect()
+    await _seed_task(
+        db,
+        "t-live",
+        schema_fields={"cat": {"field_type": "string", "description": "c"}},
+    )
+    await _seed_task(
+        db,
+        "t-gone",
+        schema_fields={"cat": {"field_type": "string", "description": "c"}},
+    )
+    await db.update_task_status("t-gone", "cancelled")
+    await db.close()
+
+    config = _make_config(db_path)
+    app = create_app(config)
+    with TestClient(app) as client:
+        resp = client.get("/api/tasks")
+        assert resp.status_code == 200
+        ids = {t["task_id"] for t in resp.json()["tasks"]}
+        assert "t-live" in ids
+        assert "t-gone" not in ids
 
 
 @pytest.mark.asyncio

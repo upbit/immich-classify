@@ -100,6 +100,10 @@ immich-classify generate --goal <description> [--output <file.py>] [--api-url <u
 
 immich-classify status [--task <task_id>]
     Show all tasks, or detailed progress for a specific task.
+    The summary listing includes Prompt and Albums (abbreviated) columns so
+    tasks sharing an album but using different prompts (or vice versa) are
+    distinguishable at a glance. Cancelled tasks are hidden from the summary;
+    pass --task <id> to inspect a cancelled task directly.
 
 immich-classify results --task <id> [--filter <key=value>]... [--format json|csv|table]
     Query classification results with optional field filtering.
@@ -244,7 +248,7 @@ immich-classify app --no-browser
 
 **WebUI features:**
 
-- **Task selector** — switch between classification tasks from a dropdown; shows task ID, status, prompt name, and progress
+- **Task selector** — switch between classification tasks from a dropdown; shows task ID, status, prompt name, abbreviated album ID(s), and progress. Cancelled tasks are hidden so the dropdown stays focused on active/paused/completed work; two runs on the same album with different prompts are distinguishable at a glance via the `· <prompt> · 📁<album_abbrev>` suffix.
 - **Dynamic filter form** — auto-generated from the task's prompt schema: enum fields become dropdowns, booleans become select boxes, numbers get numeric inputs
 - **Raw filter rows** — add arbitrary `key=value` filters for advanced queries (same semantics as `results --filter`)
 - **Thumbnail grid** — browse all matching results as a responsive image grid with lazy loading and loading spinners
@@ -342,19 +346,19 @@ uv run pyright src/immich_classify/
 
 ### Test suite
 
-116 tests covering all modules:
+132 tests covering all modules:
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
 | `config.py` | 8 | Validation, env loading, defaults, missing fields |
-| `prompt_base.py` + `prompts/` | 17 | Schema generation, JSON schema, serialization roundtrip, registry |
+| `prompt_base.py` + `prompts/` | 20 | Schema generation, JSON schema, serialization roundtrip, registry |
 | `prompt_generator.py` | 6 | Export to Python, AI generation with mock, error handling |
-| `database.py` | 19 | CRUD, filtering with `json_extract`, deduplication, asset flags, batch update |
+| `database.py` | 24 | CRUD, filtering with `json_extract`, deduplication, asset flags, batch update |
 | `immich_client.py` | 5 | Album listing, asset filtering, image download |
 | `vlm_client.py` | 24 | Success, API errors, invalid JSON, structured output, markdown stripping, mixed-content extraction |
-| `engine.py` | 9 | Concurrency, error continuation, pause/resume, dedup |
-| `cli.py` | 19 | Argument parsing, filter parsing, multi-album |
-| `webapp.py` | 9 | Task listing, schema API, result filtering, thumbnail proxy, trashed exclusion |
+| `engine.py` | 11 | Concurrency, error continuation, pause/resume, dedup |
+| `cli.py` | 24 | Argument parsing, filter parsing, multi-album, status listing (cancelled hidden, prompt/albums columns) |
+| `webapp.py` | 10 | Task listing (cancelled hidden, prompt/album_abbrev exposed), schema API, result filtering, thumbnail proxy, trashed exclusion |
 
 ## Tech Stack
 

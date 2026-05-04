@@ -407,6 +407,10 @@ async def cmd_status(config: Config, task_id: str | None) -> None:
                 print(f"Results:    {dict(summary)}")
         else:
             tasks = await database.get_all_tasks()
+            # Hide cancelled tasks from the summary list — they add noise and
+            # their results are already preserved. Users can still inspect
+            # a specific cancelled task by passing ``--task <id>``.
+            tasks = [t for t in tasks if t["status"] != "cancelled"]
             if not tasks:
                 logger.info("No tasks found")
                 return
@@ -420,9 +424,37 @@ async def cmd_status(config: Config, task_id: str | None) -> None:
                 )
                 total = t["total_count"]
                 pending = max(total - completed - failed, 0)
+
+                # Extract the prompt type (``BasePrompt.name``) from the
+                # stored config so two tasks classifying the same album with
+                # different prompts are distinguishable at a glance.
+                prompt_name = ""
+                try:
+                    cfg_raw = t.get("prompt_config") or "{}"
+                    cfg = json.loads(cfg_raw)
+                    prompt_name = str(cfg.get("name") or "")
+                except (ValueError, TypeError):
+                    prompt_name = ""
+
+                # Abbreviated album IDs — first 8 chars per album, joined by
+                # commas. Same reason: disambiguate multiple runs on the same
+                # album at a glance.
+                album_ids_list: list[str] = []
+                try:
+                    parsed_albums: Any = json.loads(t.get("album_ids") or "[]")
+                    if isinstance(parsed_albums, list):
+                        album_ids_list = [
+                            str(a) for a in cast(list[Any], parsed_albums)
+                        ]
+                except (ValueError, TypeError):
+                    album_ids_list = []
+                album_abbrev = ",".join(aid[:8] for aid in album_ids_list)
+
                 table_data.append([
                     t["task_id"],
                     t["status"],
+                    prompt_name,
+                    album_abbrev,
                     f"{completed}/{total}",
                     failed,
                     pending,
@@ -430,7 +462,16 @@ async def cmd_status(config: Config, task_id: str | None) -> None:
                 ])
             print(tabulate(
                 table_data,
-                headers=["Task ID", "Status", "Progress", "Failed", "Pending", "Created"],
+                headers=[
+                    "Task ID",
+                    "Status",
+                    "Prompt",
+                    "Albums",
+                    "Progress",
+                    "Failed",
+                    "Pending",
+                    "Created",
+                ],
                 tablefmt="simple",
             ))
     finally:

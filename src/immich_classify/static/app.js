@@ -89,7 +89,10 @@
       opt.value = t.task_id;
       const idShort = t.task_id.slice(0, 8);
       const namePart = t.prompt_name ? ` · ${t.prompt_name}` : "";
-      opt.textContent = `${idShort}… [${t.status}]${namePart} (${t.completed_count}/${t.total_count})`;
+      // Show an abbreviated album id so two tasks on the same album with
+      // different prompts (or vice-versa) are visually distinguishable.
+      const albumPart = t.album_abbrev ? ` · 📁${t.album_abbrev}` : "";
+      opt.textContent = `${idShort}… [${t.status}]${namePart}${albumPart} (${t.completed_count}/${t.total_count})`;
       opt.dataset.meta = JSON.stringify(t);
       taskSelect.appendChild(opt);
     }
@@ -103,8 +106,10 @@
       return;
     }
     const meta = JSON.parse(selectedOpt.dataset.meta);
+    const promptPart = meta.prompt_name ? `  ·  prompt ${meta.prompt_name}` : "";
+    const albumPart = meta.album_abbrev ? `  ·  albums ${meta.album_abbrev}` : "";
     taskMeta.textContent =
-      `${meta.task_id}  ·  created ${meta.created_at?.slice(0, 19) ?? ""}  ·  ${meta.completed_count}/${meta.total_count} done, ${meta.failed_count} failed`;
+      `${meta.task_id}${promptPart}${albumPart}  ·  created ${meta.created_at?.slice(0, 19) ?? ""}  ·  ${meta.completed_count}/${meta.total_count} done, ${meta.failed_count} failed`;
   }
 
   async function onTaskChanged() {

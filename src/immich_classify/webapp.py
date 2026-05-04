@@ -108,11 +108,27 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/api/tasks")
     async def api_tasks(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
-        """Return all tasks (newest first), with safe summary fields."""
+        """Return all tasks (newest first), with safe summary fields.
+
+        Cancelled tasks are filtered out — they clutter the WebUI dropdown
+        and users can still query their results via the CLI if needed.
+        Each entry also carries:
+
+        * ``prompt_name`` — the ``BasePrompt.name`` from the stored config,
+          so two tasks run on the same album with different prompts are
+          distinguishable.
+        * ``album_ids`` — the full list of album IDs.
+        * ``album_abbrev`` — a short, human-readable joining of the first 8
+          characters of each album ID, used by the frontend dropdown to
+          disambiguate tasks at a glance.
+        """
         db = cast(Database, request.app.state.db)
         rows = await db.get_all_tasks()
         tasks: list[dict[str, Any]] = []
         for r in rows:
+            # Skip cancelled tasks — they are hidden from the UI listing.
+            if r.get("status") == "cancelled":
+                continue
             prompt_name = ""
             raw_cfg = r.get("prompt_config")
             if raw_cfg:
@@ -121,6 +137,16 @@ def create_app(config: Config) -> FastAPI:
                     prompt_name = str(parsed.get("name", ""))
                 except (ValueError, TypeError):
                     prompt_name = ""
+            # Parse album_ids JSON (stored as a JSON-encoded list by the engine).
+            album_ids: list[str] = []
+            try:
+                raw_albums = r.get("album_ids") or "[]"
+                parsed_albums: Any = json.loads(raw_albums)
+                if isinstance(parsed_albums, list):
+                    album_ids = [str(a) for a in cast(list[Any], parsed_albums)]
+            except (ValueError, TypeError):
+                album_ids = []
+            album_abbrev = ",".join(aid[:8] for aid in album_ids)
             tasks.append({
                 "task_id": r["task_id"],
                 "status": r["status"],
@@ -129,6 +155,8 @@ def create_app(config: Config) -> FastAPI:
                 "failed_count": r["failed_count"],
                 "created_at": r["created_at"],
                 "prompt_name": prompt_name,
+                "album_ids": album_ids,
+                "album_abbrev": album_abbrev,
             })
         return JSONResponse({"tasks": tasks})
 
