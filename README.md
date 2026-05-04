@@ -102,8 +102,10 @@ immich-classify status [--task <task_id>]
     Show all tasks, or detailed progress for a specific task.
     The summary listing includes Prompt and Albums (abbreviated) columns so
     tasks sharing an album but using different prompts (or vice versa) are
-    distinguishable at a glance. Cancelled tasks are hidden from the summary;
-    pass --task <id> to inspect a cancelled task directly.
+    distinguishable at a glance. Cancelled tasks are hidden from both the
+    summary listing and the WebUI dropdown — they are effectively tombstones
+    (their per-asset results remain in the database for auditing but are not
+    surfaced in the UI).
 
 immich-classify results --task <id> [--filter <key=value>]... [--format json|csv|table]
     Query classification results with optional field filtering.
