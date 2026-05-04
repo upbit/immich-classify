@@ -55,6 +55,87 @@ cp .env.example .env
 
 Environment variables override `.env` file values.
 
+### Initial setup (AI-assisted friendly)
+
+This section documents a deterministic setup flow so that an AI assistant (e.g. Claude) — or a human following the same steps — can fill in `.env` end-to-end. It's split into three stages plus self-check commands.
+
+#### Stage A — Immich
+
+1. **`IMMICH_API_URL`** — ask the user for their Immich server address. The default `http://localhost:2283` is only correct for a local install on the same machine; remote / NAS deployments use a different host.
+2. **`IMMICH_API_KEY`** — guide the user to create one:
+   - Open the Immich Web UI
+   - Click the avatar (top-right) → **Account Settings**
+   - Go to **API Keys** → **New API Key**
+   - Name it anything (e.g. `immich-classify`), copy the generated key into `.env`
+3. **Self-check**:
+   ```bash
+   immich-classify albums
+   ```
+   Should list the user's albums. If it errors with 401/403 → wrong API key. If it errors with connection refused / timeout → wrong URL.
+
+#### Stage B — VLM (Vision Language Model)
+
+1. **`VLM_API_URL`** — must be provided by the user; there is no universal default. Common endpoints:
+
+   | Service | Typical URL | API key |
+   |---------|-------------|---------|
+   | llama.cpp (`llama-server`) | `http://localhost:8080/v1` | `no-key` |
+   | vLLM | `http://localhost:8000/v1` | `no-key` |
+   | Ollama | `http://localhost:11434/v1` | `no-key` |
+   | LM Studio | `http://localhost:1234/v1` | `no-key` |
+   | OpenAI | `https://api.openai.com/v1` | `sk-...` |
+
+2. **No VLM yet? Install llama.cpp and run one command:**
+
+   Follow the [llama.cpp install guide](https://github.com/ggml-org/llama.cpp/blob/master/docs/install.md) (`brew install llama.cpp` on macOS, or build from source), then:
+   ```bash
+   llama-server -hf ggml-org/gemma-4-E4B-it-GGUF
+   ```
+   This downloads the Gemma-4 E4B instruction-tuned VLM and serves it on `http://localhost:8080/v1` with no auth. Now set:
+   ```dotenv
+   VLM_API_URL=http://localhost:8080/v1
+   VLM_API_KEY=no-key
+   ```
+
+3. **`VLM_MODEL_NAME`** — auto-discover via the OpenAI-compatible `/models` endpoint:
+   ```bash
+   curl -s $VLM_API_URL/models | jq -r '.data[].id'
+   ```
+   - One result → use it directly
+   - Multiple results → ask the user to pick
+   - Leaving `VLM_MODEL_NAME` empty uses the server's default model (safe for single-model servers like `llama-server`)
+
+4. **Self-check**:
+   ```bash
+   # Pick a small album from Stage A's output
+   immich-classify debug --album <album_id> --count 2
+   ```
+   Runs classification on 2 images without writing to the DB and prints the parsed JSON. If it hangs or errors → URL/model/key issue.
+
+#### Stage C — Classification settings
+
+All have sensible defaults; no input required unless the user wants to tune:
+
+- `CLASSIFY_DB_PATH` — where to store the SQLite DB
+- `CLASSIFY_CONCURRENCY` — raise this if the VLM server can handle parallel requests
+- `CLASSIFY_TIMEOUT` — raise if using a slow model / large images
+- `CLASSIFY_IMAGE_SIZE` — `thumbnail` (fast, recommended) or `original` (more accurate on fine details)
+- `CLASSIFY_DEFAULT_PROMPT` — leave unset to use the built-in `ClassificationPrompt`
+
+#### Minimum working `.env` example
+
+After stages A+B complete with llama.cpp, `.env` should look roughly like this:
+
+```dotenv
+IMMICH_API_URL=http://localhost:2283
+IMMICH_API_KEY=<paste from Immich Account Settings → API Keys>
+VLM_API_URL=http://localhost:8080/v1
+VLM_API_KEY=no-key
+# VLM_MODEL_NAME=  # empty = use llama-server's default (the model you loaded with -hf)
+```
+
+Then run `immich-classify albums` and `immich-classify debug --album <id> --count 2` as final verification.
+
 ## Usage
 
 ### Quick start
