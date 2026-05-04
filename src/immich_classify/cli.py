@@ -368,7 +368,16 @@ async def cmd_generate(
 
 
 async def cmd_status(config: Config, task_id: str | None) -> None:
-    """Show task status."""
+    """Show task status.
+
+    Per-asset rows in ``classification_results`` are the ground truth; the
+    denormalized ``completed_count`` / ``failed_count`` on the ``tasks`` row
+    is maintained incrementally and can drift (e.g. legacy data from the
+    old double-counting bug, or a crash between ``save_result`` and
+    ``increment_task_completed``). Reconcile from rows before displaying so
+    the status view always matches reality and always satisfies
+    ``completed + failed + pending == total``.
+    """
     database = Database(config.database_path)
     try:
         await database.connect()
@@ -379,13 +388,19 @@ async def cmd_status(config: Config, task_id: str | None) -> None:
                 logger.error("Task {} not found", task_id)
                 sys.exit(1)
 
+            # Reconcile counters from per-asset rows (ground truth).
+            completed, failed = await database.reset_counts_from_results(task_id)
             summary = await database.get_result_summary(task_id)
+            total: int = task["total_count"]
+            pending = max(total - completed - failed, 0)
+
             print(f"Task ID:    {task['task_id']}")
             print(f"Status:     {task['status']}")
             print(f"Albums:     {task['album_ids']}")
-            print(f"Total:      {task['total_count']}")
-            print(f"Completed:  {task['completed_count']}")
-            print(f"Failed:     {task['failed_count']}")
+            print(f"Total:      {total}")
+            print(f"Completed:  {completed}")
+            print(f"Failed:     {failed}")
+            print(f"Pending:    {pending}")
             print(f"Created:    {task['created_at']}")
             print(f"Updated:    {task['updated_at']}")
             if summary:
@@ -396,19 +411,26 @@ async def cmd_status(config: Config, task_id: str | None) -> None:
                 logger.info("No tasks found")
                 return
 
-            table_data = [
-                [
+            # Reconcile every task's counters from rows. A ``status`` listing
+            # should never lie; the small extra write is cheap.
+            table_data: list[list[Any]] = []
+            for t in tasks:
+                completed, failed = await database.reset_counts_from_results(
+                    t["task_id"]
+                )
+                total = t["total_count"]
+                pending = max(total - completed - failed, 0)
+                table_data.append([
                     t["task_id"],
                     t["status"],
-                    f"{t['completed_count']}/{t['total_count']}",
-                    t["failed_count"],
+                    f"{completed}/{total}",
+                    failed,
+                    pending,
                     t["created_at"][:19],
-                ]
-                for t in tasks
-            ]
+                ])
             print(tabulate(
                 table_data,
-                headers=["Task ID", "Status", "Progress", "Failed", "Created"],
+                headers=["Task ID", "Status", "Progress", "Failed", "Pending", "Created"],
                 tablefmt="simple",
             ))
     finally:
@@ -541,7 +563,7 @@ async def cmd_resume(
     task_id: str,
     concurrency: int | None,
 ) -> None:
-    """Resume a paused task."""
+    """Resume a paused, failed, or completed task (retries any non-success assets)."""
     database = Database(config.database_path)
     immich = ImmichClient(config.immich_api_url, config.immich_api_key, config.timeout)
     vlm = VLMClient(config.vlm_api_url, config.vlm_api_key, config.vlm_model_name, config.timeout)

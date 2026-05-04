@@ -236,6 +236,72 @@ class Database:
         )
         await self.connection.commit()
 
+    async def reset_counts_from_results(self, task_id: str) -> tuple[int, int]:
+        """Recompute ``completed_count`` / ``failed_count`` from the actual
+        per-asset rows in ``classification_results``.
+
+        The per-task counters are incremented greedily as assets finish, which
+        means that retrying previously failed assets (via ``resume``) causes
+        them to be double-counted — e.g. an asset that fails once and succeeds
+        on retry contributes both ``+1`` to ``failed_count`` and ``+1`` to
+        ``completed_count``. The per-asset row, however, only ever stores the
+        latest status, so it is the ground truth.
+
+        Call this at the start of every run/resume to reset the task counters
+        to match reality before processing continues.
+
+        Args:
+            task_id: The task to recount.
+
+        Returns:
+            Tuple of ``(completed_count, failed_count)`` after the reset.
+        """
+        cursor = await self.connection.execute(
+            """
+            SELECT
+                SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS completed,
+                SUM(CASE WHEN status = 'failed'  THEN 1 ELSE 0 END) AS failed
+            FROM classification_results
+            WHERE task_id = ?
+            """,
+            (task_id,),
+        )
+        row = await cursor.fetchone()
+        completed = int(row["completed"] or 0) if row is not None else 0
+        failed = int(row["failed"] or 0) if row is not None else 0
+
+        await self.connection.execute(
+            """
+            UPDATE tasks
+            SET completed_count = ?, failed_count = ?, updated_at = ?
+            WHERE task_id = ?
+            """,
+            (completed, failed, _now_iso(), task_id),
+        )
+        await self.connection.commit()
+        return completed, failed
+
+    async def reset_failed_results_to_pending(self, task_id: str) -> int:
+        """Flip every ``failed`` per-asset row back to ``pending`` so the
+        engine will retry it on the next run.
+
+        Args:
+            task_id: The task to reset.
+
+        Returns:
+            Number of rows that were flipped.
+        """
+        cursor = await self.connection.execute(
+            """
+            UPDATE classification_results
+            SET status = 'pending', error_message = NULL, raw_response = NULL
+            WHERE task_id = ? AND status = 'failed'
+            """,
+            (task_id,),
+        )
+        await self.connection.commit()
+        return cursor.rowcount or 0
+
     # ── Result operations ────────────────────────────────────────────
 
     async def insert_pending_results(

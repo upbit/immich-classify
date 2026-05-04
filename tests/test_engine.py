@@ -227,8 +227,90 @@ class TestTaskEngine:
         assert task is not None
         assert task["status"] == "completed"
 
+    @pytest.mark.asyncio
+    async def test_resume_completed_task_retries_failed(self, db: Database) -> None:
+        """Completed tasks with failed items can still be resumed to retry them."""
+        assets = [
+            Asset(asset_id="img-1", original_file_name="a.jpg", asset_type="IMAGE"),
+            Asset(asset_id="img-2", original_file_name="b.jpg", asset_type="IMAGE"),
+        ]
+        config = _make_config()
+        immich = _make_mock_immich(assets)
 
-class TestDebugClassify:
+        # First run: all fail, status ends up "completed" with failed_count=2
+        vlm_fail = _make_mock_vlm(error=VLMError("timeout"))
+        engine = TaskEngine(config, db, immich, vlm_fail)
+        task_id = await engine.create_and_run_task(
+            album_ids=["album-1"],
+            prompt_config=ClassificationPrompt(),
+        )
+
+        task = await db.get_task(task_id)
+        assert task is not None
+        assert task["status"] == "completed"
+        assert task["completed_count"] == 0
+        assert task["failed_count"] == 2
+
+        # Resume the "completed" task with a working VLM — should retry failed items
+        vlm_ok = _make_mock_vlm({"category": "people"})
+        engine2 = TaskEngine(config, db, immich, vlm_ok)
+        await engine2.resume_task(task_id)
+
+        task = await db.get_task(task_id)
+        assert task is not None
+        assert task["status"] == "completed"
+        assert task["completed_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_resume_recomputes_counters_no_double_counting(self, db: Database) -> None:
+        """Resume must not let failed_count balloon past total_count.
+
+        Regression test for the ``Progress:464/2189, Failed:2124`` symptom:
+        previously every resume called ``increment_task_failed`` again for
+        assets that had already failed on the prior run, so ``failed_count``
+        grew unbounded across retries. The fix recomputes counters from the
+        per-asset rows at the start of every run.
+        """
+        assets = [
+            Asset(asset_id=f"img-{i}", original_file_name=f"{i}.jpg", asset_type="IMAGE")
+            for i in range(5)
+        ]
+        config = _make_config()
+        immich = _make_mock_immich(assets)
+
+        # Run 1: all 5 fail.
+        vlm_fail = _make_mock_vlm(error=VLMError("timeout"))
+        engine = TaskEngine(config, db, immich, vlm_fail)
+        task_id = await engine.create_and_run_task(
+            album_ids=["album-1"],
+            prompt_config=ClassificationPrompt(),
+        )
+
+        task = await db.get_task(task_id)
+        assert task is not None
+        assert task["completed_count"] == 0
+        assert task["failed_count"] == 5
+
+        # Run 2: all 5 fail *again*. Without the reset logic, failed_count
+        # would become 10 (> total_count=5). With the fix it stays at 5.
+        engine2 = TaskEngine(config, db, immich, vlm_fail)
+        await engine2.resume_task(task_id)
+        task = await db.get_task(task_id)
+        assert task is not None
+        assert task["failed_count"] == 5
+        assert task["completed_count"] == 0
+
+        # Run 3: now all succeed. completed should be exactly 5,
+        # failed should be 0 (not 5 + 5 = 10).
+        vlm_ok = _make_mock_vlm({"category": "people"})
+        engine3 = TaskEngine(config, db, immich, vlm_ok)
+        await engine3.resume_task(task_id)
+        task = await db.get_task(task_id)
+        assert task is not None
+        assert task["completed_count"] == 5
+        assert task["failed_count"] == 0
+        assert task["completed_count"] + task["failed_count"] == task["total_count"]
+
     """Tests for debug_classify function."""
 
     @pytest.mark.asyncio

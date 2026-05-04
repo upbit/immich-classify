@@ -285,3 +285,141 @@ async def test_batch_update_asset_flags(db: Database) -> None:
     assert result["img-1"] == (True, False)
     assert result["img-2"] == (False, True)
     assert result["img-3"] == (False, False)
+
+
+# ── Regression tests for counter reconciliation ──────────────────────────
+#
+# The denormalized ``completed_count`` / ``failed_count`` on the ``tasks``
+# row is updated incrementally by the engine. Two ways it can drift out of
+# sync with the per-asset rows:
+#
+#   1. Legacy double-counting bug (fixed): resume re-incremented
+#      ``failed_count`` for the same asset across retries.
+#   2. Crash between ``save_result`` and ``increment_task_completed``: the
+#      row is ``success`` but the counter never got the +1.
+#
+# Per-asset rows in ``classification_results`` are the ground truth, so
+# ``reset_counts_from_results`` must always produce counters consistent
+# with the invariant ``completed + failed + pending == total``.
+
+
+@pytest.mark.asyncio
+async def test_reset_counts_from_results_with_pending(db: Database) -> None:
+    """Paused task: some success, some failed, some never attempted.
+
+    Regression for the "696/4863, Failed: 319" display confusion: pending
+    rows are real work left to do; ignoring them makes it look like the
+    numbers don't add up.
+    """
+    await db.create_task("task-1", ["a"], {}, 10)
+    await db.insert_pending_results(
+        "task-1", [f"img-{i}" for i in range(10)]
+    )
+    # 3 succeed, 2 fail, 5 left as pending (Ctrl+C case).
+    await db.save_result("task-1", "img-0", {"x": 1}, "{}")
+    await db.save_result("task-1", "img-1", {"x": 1}, "{}")
+    await db.save_result("task-1", "img-2", {"x": 1}, "{}")
+    await db.save_error("task-1", "img-3", "boom")
+    await db.save_error("task-1", "img-4", "boom")
+
+    completed, failed = await db.reset_counts_from_results("task-1")
+    assert completed == 3
+    assert failed == 2
+
+    task = await db.get_task("task-1")
+    assert task is not None
+    assert task["completed_count"] == 3
+    assert task["failed_count"] == 2
+    # Pending is derived, not stored — but the invariant must hold.
+    pending = task["total_count"] - completed - failed
+    assert pending == 5
+    assert completed + failed + pending == task["total_count"]
+
+
+@pytest.mark.asyncio
+async def test_reset_counts_heals_inflated_counters(db: Database) -> None:
+    """Pre-fix DB rows can have failed_count > total_count due to the old
+    double-counting bug. ``reset_counts_from_results`` must bring them back
+    to the row-truth values regardless of how inflated they start.
+    """
+    await db.create_task("task-1", ["a"], {}, 5)
+    await db.insert_pending_results("task-1", [f"img-{i}" for i in range(5)])
+    await db.save_result("task-1", "img-0", {"x": 1}, "{}")
+    await db.save_error("task-1", "img-1", "boom")
+    # img-2, img-3, img-4 stay pending.
+
+    # Simulate the legacy bug: inflate failed_count by calling the
+    # increment helper many extra times (as the old resume path did).
+    # ``save_error`` only touches the row; the engine is what calls
+    # ``increment_task_failed``. Start at 0 and inflate to 30.
+    for _ in range(30):
+        await db.increment_task_failed("task-1")
+    bad = await db.get_task("task-1")
+    assert bad is not None
+    assert bad["failed_count"] == 30  # 30 spurious increments
+    assert bad["failed_count"] > bad["total_count"]  # proves it's broken
+
+    # Reconcile — should wipe the drift.
+    completed, failed = await db.reset_counts_from_results("task-1")
+    assert completed == 1
+    assert failed == 1
+
+    healed = await db.get_task("task-1")
+    assert healed is not None
+    assert healed["completed_count"] == 1
+    assert healed["failed_count"] == 1
+    pending = healed["total_count"] - healed["completed_count"] - healed["failed_count"]
+    assert pending == 3
+    assert (
+        healed["completed_count"] + healed["failed_count"] + pending
+        == healed["total_count"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_reset_counts_empty_task(db: Database) -> None:
+    """A freshly-created task with no per-asset rows yet should reconcile
+    to (0, 0), not crash on ``SUM`` of an empty set."""
+    await db.create_task("task-1", ["a"], {}, 0)
+    completed, failed = await db.reset_counts_from_results("task-1")
+    assert completed == 0
+    assert failed == 0
+
+
+@pytest.mark.asyncio
+async def test_reset_counts_all_pending(db: Database) -> None:
+    """All rows pending (task created but never run): counters must be
+    (0, 0) and the invariant ``completed+failed+pending==total`` must hold."""
+    await db.create_task("task-1", ["a"], {}, 4)
+    await db.insert_pending_results("task-1", ["img-1", "img-2", "img-3", "img-4"])
+
+    completed, failed = await db.reset_counts_from_results("task-1")
+    assert completed == 0
+    assert failed == 0
+
+    task = await db.get_task("task-1")
+    assert task is not None
+    pending = task["total_count"] - completed - failed
+    assert pending == 4
+    assert completed + failed + pending == task["total_count"]
+
+
+@pytest.mark.asyncio
+async def test_reset_failed_to_pending_preserves_successes(db: Database) -> None:
+    """Flipping failed → pending must not touch success rows — we don't
+    want to retry assets that already classified correctly."""
+    await db.create_task("task-1", ["a"], {}, 4)
+    await db.insert_pending_results("task-1", ["img-1", "img-2", "img-3", "img-4"])
+    await db.save_result("task-1", "img-1", {"x": 1}, "{}")
+    await db.save_result("task-1", "img-2", {"x": 1}, "{}")
+    await db.save_error("task-1", "img-3", "boom")
+    await db.save_error("task-1", "img-4", "boom")
+
+    flipped = await db.reset_failed_results_to_pending("task-1")
+    assert flipped == 2
+
+    summary = await db.get_result_summary("task-1")
+    # The two successes stay; the two failures become pending again.
+    assert summary.get("success") == 2
+    assert summary.get("pending") == 2
+    assert summary.get("failed", 0) == 0

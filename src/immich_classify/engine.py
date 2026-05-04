@@ -4,16 +4,45 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import uuid
 from typing import Any
 
 from loguru import logger
+from tqdm import tqdm
 
 from immich_classify.config import Config
 from immich_classify.database import Database
 from immich_classify.immich_client import Asset, ImmichClient
 from immich_classify.prompt_base import BasePrompt
 from immich_classify.vlm_client import VLMClient, VLMError
+
+
+_tqdm_sink_installed = False
+
+
+def _install_tqdm_log_sink() -> None:
+    """Route loguru output through ``tqdm.write`` so scrolling log lines do
+    not clobber the sticky progress bar at the bottom of the terminal.
+
+    Safe to call repeatedly — the default loguru sink is only replaced once.
+    Non-TTY stderr (pipes, redirects, CI) is left alone so log files don't end
+    up with bare carriage returns from tqdm.
+    """
+    global _tqdm_sink_installed
+    if _tqdm_sink_installed:
+        return
+    if not sys.stderr.isatty():
+        _tqdm_sink_installed = True
+        return
+
+    def _sink(message: Any) -> None:  # loguru Message is str-like
+        tqdm.write(str(message), end="")
+
+    # Replace the default stderr sink so the two don't fight for the last line.
+    logger.remove()
+    logger.add(_sink, colorize=True)
+    _tqdm_sink_installed = True
 
 
 class TaskEngine:
@@ -94,7 +123,10 @@ class TaskEngine:
         task_id: str,
         concurrency: int | None = None,
     ) -> None:
-        """Resume a paused or failed task.
+        """Resume a paused, failed, or completed task.
+
+        A "completed" task can still be resumed to retry any assets whose
+        per-asset status is not 'success' (i.e. previously failed items).
 
         Args:
             task_id: The task to resume.
@@ -105,9 +137,9 @@ class TaskEngine:
             logger.error("Task {} not found", task_id)
             return
 
-        if task["status"] not in ("paused", "failed", "pending"):
+        if task["status"] not in ("paused", "failed", "pending", "completed"):
             logger.error(
-                "Task {} has status '{}', can only resume paused/failed/pending tasks",
+                "Task {} has status '{}', can only resume paused/failed/pending/completed tasks",
                 task_id,
                 task["status"],
             )
@@ -134,6 +166,24 @@ class TaskEngine:
         """
         await self._database.update_task_status(task_id, "running")
 
+        # Retry policy: on every run/resume, previously-failed rows are flipped
+        # back to 'pending' so they are reprocessed, and the task-level counters
+        # are rebuilt from the per-asset rows (the ground truth). Without this
+        # step, the counters drift on each resume — a retried failure bumps
+        # failed_count again even though the row transitions success→failed→
+        # success, producing the "Progress:464/2189, Failed:2124" pattern.
+        reset_count = await self._database.reset_failed_results_to_pending(task_id)
+        completed_so_far, failed_so_far = await self._database.reset_counts_from_results(task_id)
+        if reset_count:
+            logger.info(
+                "Task {} resuming: retrying {} previously-failed asset(s); "
+                "counters reset to completed={}, failed={}",
+                task_id,
+                reset_count,
+                completed_so_far,
+                failed_so_far,
+            )
+
         pending_asset_ids = await self._database.get_pending_asset_ids(task_id)
         if not pending_asset_ids:
             logger.info("Task {} has no pending assets, marking as completed", task_id)
@@ -143,7 +193,6 @@ class TaskEngine:
         task = await self._database.get_task(task_id)
         assert task is not None
         total = task["total_count"]
-        completed_so_far = task["completed_count"] + task["failed_count"]
 
         logger.info(
             "Starting task {} with {} pending assets (concurrency={})",
@@ -155,13 +204,32 @@ class TaskEngine:
         semaphore = asyncio.Semaphore(concurrency)
         counter = _Counter(completed_so_far)
 
+        # Sticky bottom progress bar. ``leave=True`` so the completed bar stays
+        # visible after the run; ``dynamic_ncols`` so it adapts to terminal
+        # resizes. Initial position is the already-successful count so the bar
+        # picks up exactly where the last run left off.
+        _install_tqdm_log_sink()
+        progress: Any = tqdm(
+            total=total,
+            initial=completed_so_far,
+            unit="img",
+            desc="classify",
+            dynamic_ncols=True,
+            leave=True,
+            mininterval=0.2,
+            postfix={"ok": completed_so_far, "fail": 0},
+        )
+        stats: dict[str, int] = {"ok": completed_so_far, "fail": 0}
+
         async def process_one(asset_id: str) -> None:
             if self._cancelled:
                 return
             async with semaphore:
                 if self._cancelled:
                     return
-                await self._process_single_asset(task_id, asset_id, prompt_config, counter, total)
+                await self._process_single_asset(
+                    task_id, asset_id, prompt_config, counter, total, progress, stats
+                )
 
         tasks = [asyncio.create_task(process_one(aid)) for aid in pending_asset_ids]
 
@@ -169,13 +237,27 @@ class TaskEngine:
             await asyncio.gather(*tasks)
         except asyncio.CancelledError:
             pass
+        finally:
+            progress.close()
 
         if self._cancelled:
             await self._database.update_task_status(task_id, "paused")
-            logger.info("Task {} paused ({}/{} completed)", task_id, counter.value, total)
+            logger.info(
+                "Task {} paused ({}/{} completed, {} failed this run)",
+                task_id,
+                counter.value,
+                total,
+                stats["fail"],
+            )
         else:
             await self._database.update_task_status(task_id, "completed")
-            logger.info("Task {} completed ({}/{})", task_id, counter.value, total)
+            logger.info(
+                "Task {} completed ({}/{}, {} failed this run)",
+                task_id,
+                counter.value,
+                total,
+                stats["fail"],
+            )
 
     async def _process_single_asset(
         self,
@@ -184,6 +266,8 @@ class TaskEngine:
         prompt_config: BasePrompt,
         counter: _Counter,
         total: int,
+        progress: Any,
+        stats: dict[str, int],
     ) -> None:
         """Process a single image asset: download, classify, save result.
 
@@ -191,8 +275,12 @@ class TaskEngine:
             task_id: The owning task.
             asset_id: The Immich asset ID.
             prompt_config: Classification prompt.
-            counter: Shared progress counter.
+            counter: Shared progress counter (successes only).
             total: Total number of assets in the task.
+            progress: Sticky tqdm bar at the bottom of the terminal.
+            stats: Shared ``{"ok": int, "fail": int}`` counters for the bar
+                postfix. ``ok`` mirrors ``counter.value`` but is plumbed
+                through so the bar update is a single dict write.
         """
         try:
             image_base64, content_type = await self._immich_client.download_image_base64(
@@ -210,6 +298,9 @@ class TaskEngine:
             )
             await self._database.increment_task_completed(task_id)
             counter.increment()
+            stats["ok"] += 1
+            progress.update(1)
+            progress.set_postfix(stats, refresh=False)
 
             # Build a summary of the result for logging
             summary_parts: list[str] = []
@@ -237,6 +328,9 @@ class TaskEngine:
             )
             await self._database.increment_task_failed(task_id)
             counter.increment()
+            stats["fail"] += 1
+            progress.update(1)
+            progress.set_postfix(stats, refresh=False)
             logger.warning(
                 "[{}/{}] asset_id: {} - FAILED: {}",
                 counter.value,
@@ -253,6 +347,9 @@ class TaskEngine:
             )
             await self._database.increment_task_failed(task_id)
             counter.increment()
+            stats["fail"] += 1
+            progress.update(1)
+            progress.set_postfix(stats, refresh=False)
             logger.error(
                 "[{}/{}] asset_id: {} - ERROR: {}",
                 counter.value,

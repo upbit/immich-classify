@@ -16,49 +16,33 @@ class ForegroundPeoplePrompt(BasePrompt):
     name: str = "foreground_people"
 
     system_prompt: str = (
-        "You are an expert visual analyst specializing in crowd density and "
-        "foreground detection. Your task is to count only the people who are "
-        "clearly visible in the foreground (primary subjects) and explicitly "
-        "ignore any people present in the background, crowd, or distant areas. "
-        "Focus on individuals who are the main focus of the image."
+        '你是一个高精度的视觉分析模型，专门负责对图像进行人物计数。你的核心任务是检测并统计输入图像中“真实且处于主视角内”的人数。你必须严格遵守一套复杂'
+        '的排除规则，包括忽略背景微小目标、不完整遮挡的人体、屏幕截图中的非核心主体、以及所有非现实的图像元素（如海报、模型、影子等）。你的输出必须包含一'
+        '个详细的分析过程和一个最终的整数计数。'
     )
 
     user_prompt: str = (
-        "Please analyze the provided image and return the count of foreground "
-        "people, excluding any background figures. Here is the schema "
-        "description to guide your output: {schema_description}\n"
+        '请根据以下规则对图像进行人物计数，并严格按照指定的JSON格式输出结果：\n'
+        '\n'
+        '核心任务：检测并统计输入图像中“真实且处于主视角内”的人数。\n'
+        '\n'
+        '排除规则摘要：\n'
+        '1. 忽略背景微小/失焦目标。\n'
+        '2. 忽略不完整或重度遮挡的人体（无法辨认完整主体）。\n'
+        '3. 屏幕截图/嵌套图像限制：仅统计屏幕内容中的“核心主体人物”，忽略UI头像、缩略图人物、现实环境中的2D/3D模型。\n'
+        '4. 忽略镜像、影子和非现实元素。\n'
+        '\n'
+        '{schema_description}\n'
     )
 
     schema: dict[str, SchemaField] = field(default_factory=lambda: {
-        "foreground_count": SchemaField(
-            field_type="int",
-            description="The total number of people identified as primary subjects in the foreground.",
-            default=0,
+        'analysis': SchemaField(
+            field_type='string',
+            description='简要的分析过程，说明哪些被计入，哪些触发了排除规则被忽略. 触发模型思维链分析过程。',
         ),
-        "background_ignored": SchemaField(
-            field_type="bool",
-            description="A boolean flag indicating whether background figures were successfully excluded from the count.",
-            default=True,
-        ),
-        "detection_confidence": SchemaField(
-            field_type="float",
-            description="A confidence score (0.0 to 1.0) representing the certainty of the foreground detection.",
-            default=0.9,
-        ),
-        "foreground_details": SchemaField(
-            field_type="list[string]",
-            description="A list of brief descriptions for each detected foreground person (e.g., 'man in blue shirt', 'woman holding bag').",
-        ),
-        "background_note": SchemaField(
-            field_type="string",
-            description="A short note describing the nature of the background figures that were ignored (e.g., 'crowd in distance', 'people behind fence').",
-            default="None",
-        ),
-        "occlusion_status": SchemaField(
-            field_type="string",
-            description="The occlusion status of the foreground subjects ('fully_visible', 'partially_occluded', 'heavily_occluded').",
-            enum=["fully_visible", "partially_occluded", "heavily_occluded"],
-            default="fully_visible",
+        'count': SchemaField(
+            field_type='int',
+            description='最终统计的、符合所有规则的人数。',
         ),
     })
 
